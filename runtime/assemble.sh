@@ -1,0 +1,177 @@
+#!/bin/bash
+# assemble.sh - puts together the Windows runtime that Tessera.app carries (Contents/Resources/Runtime).
+#
+#   Wine            $RT/wine-stage/opt/tessera      (build-wine.sh)
+#   libraries       $RT/deps                        (build-deps.sh: FreeType, GnuTLS, Nettle, GMP) + MoltenVK
+#   D3DMetal        Apple's Game Porting Toolkit redistributable, copied unmodified with Apple's signature
+#   DXMT            the official release            (DirectX 11 -> Metal, the alternative to D3DMetal)
+#   Steam bridge    bridge/build-bridge.sh output   (lets Windows games talk to the Mac Steam client)
+#
+# Layout of the result:
+#   bin/wine, bin/wineserver, bin/wineloader -> wine
+#   lib/wine/{x86_64-windows,i386-windows,x86_64-unix}   Wine; d3d10/11/12/dxgi are Apple's D3DMetal (the default)
+#   lib/wined3d/x86_64-windows                            Wine's own d3d10/11/12/dxgi (TESSERA_BACKEND_DIR)
+#   lib/dxmt/...                                          DXMT (TESSERA_BACKEND_DIR)
+#   lib/tessera-steam/...                                 the Steam bridge (WINEDLLPATH)
+#   lib64/*.dylib, lib64/apple_gptk/{external,wine}       libraries and D3DMetal
+#   share/wine                                            wine.inf, NLS tables, fonts
+set -euo pipefail
+RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
+WINE=$RT/wine-stage/opt/tessera
+DEPS=$RT/deps
+GPTK=${TESSERA_GPTK:-$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/apple_gptk}
+DXMT=${TESSERA_DXMT:-$RT/dxmt/v0.80}
+BRIDGE=${TESSERA_BRIDGE:-$HOME/.tessera/build/bridge/out}
+MINGW=$HOME/.tessera/build/llvm-mingw-20261117-ucrt-macos-universal
+OUT=${1:-$RT/out/Runtime}
+step() { echo "== $1"; }
+
+for need in "$WINE/bin/wine" "$DEPS/lib/libgnutls.30.dylib" "$GPTK/external/libd3dshared.dylib" \
+            "$DXMT/x86_64-windows/d3d11.dll" "$BRIDGE/x86_64-unix/lsteamclient.so" "$BRIDGE/i386-windows/steam.exe"; do
+    [ -e "$need" ] || { echo "missing: $need"; exit 1; }
+done
+rm -rf "$OUT"
+mkdir -p "$OUT/bin" "$OUT/lib" "$OUT/lib64" "$OUT/share"
+
+step "Wine"
+cp "$WINE/bin/wine" "$WINE/bin/wineserver" "$OUT/bin/"
+ln -s wine "$OUT/bin/wineloader"
+ditto "$WINE/lib/wine" "$OUT/lib/wine"
+ditto "$WINE/share/wine" "$OUT/share/wine"
+find "$OUT/lib/wine" -name "*.a" -delete                      # import libraries are for building, not running
+
+step "debug info"
+# Left in, Wine's own dbghelp trips over it and kills the process that touched it (Steam's helpers, every time)
+find "$OUT/lib/wine/x86_64-windows" "$OUT/lib/wine/i386-windows" -type f \
+     \( -name "*.dll" -o -name "*.exe" -o -name "*.drv" -o -name "*.sys" -o -name "*.acm" -o -name "*.ocx" \
+        -o -name "*.cpl" -o -name "*.tlb" -o -name "*.ax" -o -name "*.ds" -o -name "*.msstyles" \) \
+     -exec "$MINGW/bin/llvm-strip" --strip-debug {} + 2>/dev/null || true
+find "$OUT/lib/wine/x86_64-unix" -name "*.so" -type f -exec strip -S {} + 2>/dev/null || true
+strip -S "$OUT/bin/wine" "$OUT/bin/wineserver"
+
+step "libraries"
+LIBS="libfreetype.6.dylib libgnutls.30.dylib libnettle.8.dylib libhogweed.6.dylib libgmp.10.dylib libMoltenVK.dylib"
+# FFmpeg: what winedmo links (avformat, avcodec, avutil) and what those need (swresample)
+for ff in libavformat.61.dylib libavcodec.61.dylib libavutil.59.dylib libswresample.5.dylib; do
+    [ -f "$DEPS/lib/$ff" ] && LIBS="$LIBS $ff"
+done
+for name in $LIBS; do
+    f="$OUT/lib64/$name"
+    cp -L "$DEPS/lib/$name" "$f"
+    chmod u+w "$f"
+    install_name_tool -id "@rpath/$name" "$f" 2>/dev/null
+    strip -S -x "$f" 2>/dev/null || true                     # debug maps name the build folders
+    for dep in $(otool -L "$f" | awk 'NR>1 {print $1}' | grep -E "^($DEPS|/opt/tessera-deps)/lib/" || true); do
+        install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f" 2>/dev/null
+    done
+    install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true
+done
+
+step "search paths"
+# Wine's own unix libraries that link a bundled library directly (winedmo -> FFmpeg) find it through @rpath too
+for so in "$OUT"/lib/wine/x86_64-unix/*.so; do
+    [ -L "$so" ] && continue
+    for dep in $(otool -L "$so" | awk 'NR>1 {print $1}' | grep -E "^($DEPS|/opt/tessera-deps)/lib/" || true); do
+        install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$so" 2>/dev/null
+    done
+done
+# The binaries reference their libraries through @rpath; macOS ignores DYLD_LIBRARY_PATH for signed loaders.
+for b in "$OUT/bin/wine" "$OUT/bin/wineserver"; do
+    install_name_tool -add_rpath "@loader_path/../lib64" "$b" 2>/dev/null || true
+done
+find "$OUT/lib/wine/x86_64-unix" -name "*.so" -type f \
+     -exec install_name_tool -add_rpath "@loader_path/../../../lib64" {} \; 2>/dev/null || true
+
+step "D3DMetal (Apple, unmodified)"
+mkdir -p "$OUT/lib64/apple_gptk" "$OUT/lib/wined3d/x86_64-windows"
+ditto "$GPTK/external" "$OUT/lib64/apple_gptk/external"
+ditto "$GPTK/wine" "$OUT/lib64/apple_gptk/wine"
+W="$OUT/lib/wine/x86_64-windows"; U="$OUT/lib/wine/x86_64-unix"
+for d in d3d10 d3d11 d3d12 dxgi; do
+    [ -f "$W/$d.dll" ] && mv "$W/$d.dll" "$OUT/lib/wined3d/x86_64-windows/$d.dll"
+    cp "$GPTK/wine/x86_64-windows/$d.dll" "$W/$d.dll"
+    ln -sf "../../../lib64/apple_gptk/external/libd3dshared.dylib" "$U/$d.so"
+done
+# Apple's copies of those DLLs now sit in Wine's folders and the .so links point at libd3dshared directly; the rest of
+# Apple's wine/ folder (AMD and NVIDIA stand-ins) is not used
+rm -rf "$OUT/lib64/apple_gptk/wine"
+# NVIDIA's names stay out of the default path: Chromium-based launchers probe nvapi64 at start and stall on it
+rm -f "$W/nvapi64.dll" "$W/nvngx.dll" "$U/nvapi64.so" "$U/nvngx.so"
+
+step "DXMT"
+mkdir -p "$OUT/lib/dxmt"
+for arch in x86_64-windows i386-windows x86_64-unix; do ditto "$DXMT/$arch" "$OUT/lib/dxmt/$arch"; done
+# DXMT's NVIDIA stand-ins never load here (Tessera gives them no system-folder placeholder, see the launcher)
+rm -f "$OUT/lib/dxmt/x86_64-windows/nvapi64.dll" "$OUT/lib/dxmt/x86_64-windows/nvngx.dll"
+# winemetal.so links Wine's winemac.so and ntdll.so through @rpath
+for rp in "@loader_path/../../wine/x86_64-unix" "@loader_path/../../../lib64"; do
+    install_name_tool -add_rpath "$rp" "$OUT/lib/dxmt/x86_64-unix/winemetal.so" 2>/dev/null || true
+done
+
+step "Steam bridge"
+SB="$OUT/lib/tessera-steam"
+mkdir -p "$SB/x86_64-windows" "$SB/i386-windows" "$SB/x86_64-unix"
+cp "$BRIDGE/x86_64-windows/lsteamclient.dll" "$SB/x86_64-windows/"
+cp "$BRIDGE/i386-windows/lsteamclient.dll" "$SB/i386-windows/"
+cp "$BRIDGE/x86_64-unix/lsteamclient.so" "$SB/x86_64-unix/"
+cp "$BRIDGE/x86_64-windows/steam.exe" "$SB/x86_64-windows/steam.exe"     # Wine built-ins (bridge/build-bridge.sh)
+cp "$BRIDGE/i386-windows/steam.exe" "$SB/i386-windows/steam.exe"
+"$MINGW/bin/llvm-strip" --strip-debug "$SB"/*-windows/lsteamclient.dll "$SB"/*-windows/steam.exe 2>/dev/null || true
+strip -S "$SB/x86_64-unix/lsteamclient.so" 2>/dev/null || true
+
+step "signing"
+# Wine writes and runs its own code: the loader gets the entitlements for that, and may load our unsigned libraries.
+ENT=$(mktemp -t tessera-ent)
+cat > "$ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+	<key>com.apple.security.cs.disable-executable-page-protection</key><true/>
+	<key>com.apple.security.cs.disable-library-validation</key><true/>
+	<key>com.apple.security.device.audio-input</key><true/>
+	<key>com.apple.security.device.camera</key><true/>
+</dict></plist>
+PLIST
+for b in "$OUT/bin/wine" "$OUT/bin/wineserver"; do
+    codesign --force --sign - --options runtime --entitlements "$ENT" "$b" 2>&1 | grep -v "replacing existing" || true
+done
+rm -f "$ENT"
+# our own Mach-O files only - Apple's D3DMetal keeps Apple's signature (re-signing it makes macOS reject it)
+find "$OUT/lib/wine/x86_64-unix" "$OUT/lib/dxmt/x86_64-unix" "$SB/x86_64-unix" -name "*.so" -type f \
+     -exec codesign --force --sign - {} \; 2>/dev/null
+find "$OUT/lib64" -maxdepth 1 -name "*.dylib" -type f -exec codesign --force --sign - {} \; 2>/dev/null
+xattr -cr "$OUT" 2>/dev/null || true
+codesign -v "$OUT/lib64/apple_gptk/external/libd3dshared.dylib" && echo "   D3DMetal keeps Apple's signature"
+
+step "description"
+cat > "$OUT/tessera-runtime.json" <<EOF
+{
+  "name": "Tessera Windows runtime",
+  "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "wine": "$("$OUT/bin/wine" --version 2>/dev/null || echo wine-11.0)",
+  "components": {
+    "D3DMetal": "Apple Game Porting Toolkit redistributable (unmodified)",
+    "DXMT": "$(basename "$DXMT")",
+    "MoltenVK": "1.4.2",
+    "FreeType": "$(sed -n 's/^#define FREETYPE_MAJOR *//p;s/^#define FREETYPE_MINOR *//p;s/^#define FREETYPE_PATCH *//p' "$DEPS/include/freetype2/freetype/freetype.h" | paste -sd. -)",
+    "GnuTLS": "$(sed -n 's/^#define GNUTLS_VERSION "\(.*\)"/\1/p' "$DEPS/include/gnutls/gnutls.h")",
+    "FFmpeg": "$([ -f "$DEPS/lib/libavcodec.61.dylib" ] && echo 7.1.1 || echo none)"
+  },
+  "graphics": ["d3dmetal", "dxmt", "wined3d"]
+}
+EOF
+
+step "check"
+# /Users/runner/... in DXMT is its GitHub build server, not this Mac
+leaks=$(grep -rl -a -E "$HOME|/Users/[a-z]" "$OUT" 2>/dev/null | grep -v "/apple_gptk/" \
+        | while read -r f; do strings -a "$f" | grep -E "$HOME|/Users/[a-z]" | grep -v "/Users/runner/" | grep -q . && echo "$f"; done | head -5 || true)
+[ -z "$leaks" ] && echo "   no build-machine paths" || { echo "   build-machine paths in:"; echo "$leaks" | sed 's/^/     /'; }
+# brand names only; skipped: FFmpeg ("crossover" is an audio term there), fonts (they credit their designers), and
+# copyright lines inside embedded scripts - credits and copyright notices must stay
+brand=$(grep -rl -a -E "CrossOver|Crossover|CROSSOVER|CodeWeavers|Codeweavers|codeweavers" "$OUT" 2>/dev/null \
+        | grep -v -E "/apple_gptk/|/lib64/libav|/share/wine/fonts/" | while read -r f; do
+            strings -a "$f" | grep -E "CrossOver|Crossover|CROSSOVER|CodeWeavers|Codeweavers|codeweavers" \
+                | grep -v -i -E "copyright|\(c\)" | grep -q . && echo "$f"; done | head -8 || true)
+[ -z "$brand" ] && echo "   no CrossOver/CodeWeavers text" || { echo "   CrossOver/CodeWeavers text in:"; echo "$brand" | sed 's/^/     /'; }
+du -sh "$OUT" | cut -f1

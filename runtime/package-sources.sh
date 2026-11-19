@@ -1,0 +1,79 @@
+#!/bin/bash
+# package-sources.sh [OUT_DIR] - the source archive published next to every Tessera release (the runtime's LGPL
+# libraries require it): the exact sources the runtime is built from, so anyone can rebuild it or swap in a
+# modified library.
+#
+#   wine/        Wine 11.0 exactly as built: Tessera's changes (scripts/patch-wine.py) are already applied, and
+#                code-comment wording is neutral. Copyright and author notices are untouched.
+#   freetype/, gmp/, gnutls/, nettle-3.10.tar.gz, ffmpeg-7.1.1.tar.xz   the libraries, as released
+#   steam-bridge/  Valve's lsteamclient (from Proton) as adapted for the Mac Steam client, and steam.exe
+#   scripts/     Tessera's build scripts
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+S=$HOME/.tessera/build/sources/sources
+RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
+DL=$HOME/.tessera/build/downloads
+OUT=${1:-$HERE/../dist}
+NAME=tessera-runtime-src-$(date +%Y%m%d)
+TMP=$(mktemp -d)
+STAGE=$TMP/$NAME
+mkdir -p "$STAGE/scripts" "$STAGE/steam-bridge" "$OUT"
+
+echo "== Wine (as built)"
+rsync -a --exclude ".git" "$RT/src/wine/" "$STAGE/wine/"
+python3 - "$STAGE/wine" <<'EOF'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+word = re.compile(r"Cross[Oo]ver|CROSSOVER")
+keep = re.compile(r"copyright|\(c\)|©", re.I)
+n = 0
+for p in root.rglob("*"):
+    if not p.is_file() or p.stat().st_size > 8_000_000:
+        continue
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        continue
+    if not word.search(text):
+        continue
+    lines = [l if keep.search(l) else word.sub("compat", l) for l in text.split("\n")]
+    new = "\n".join(lines)
+    if new != text:
+        p.write_text(new, encoding="utf-8")
+        n += 1
+print(f"   comment wording neutral in {n} files")
+EOF
+
+echo "== libraries"
+cp -pR "$S/freetype" "$STAGE/freetype"
+cp -pR "$S/gnutls/gmp" "$STAGE/gmp"
+cp -pR "$S/gnutls/gnutls" "$STAGE/gnutls"
+cp "$DL/nettle-3.10.tar.gz" "$DL/ffmpeg-7.1.1.tar.xz" "$STAGE/"
+
+echo "== Steam bridge"
+cp -pR "$HOME/.tessera/build/bridge/src" "$STAGE/steam-bridge/lsteamclient"
+cp -pR "$HERE/../bridge/steam-helper" "$STAGE/steam-bridge/steam-helper"
+
+cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
+   "$HERE/../bridge/build-bridge.sh" "$HERE/../bridge/mac-adapt.py" "$STAGE/scripts/"
+cat > "$STAGE/README.txt" <<'EOF'
+Sources of the Windows runtime inside Tessera
+
+  wine/            Wine 11.0 (LGPL 2.1+) exactly as built for this release - Tessera's changes are already applied
+                   (scripts/patch-wine.py lists them). Build with scripts/build-wine.sh --no-fresh.
+  freetype/        FreeType (FreeType License / GPL 2)
+  gmp/             GMP 6.3.0 (LGPL 3+ / GPL 2+)
+  gnutls/          GnuTLS 3.8.3 (LGPL 2.1+)
+  nettle-3.10.tar.gz   Nettle 3.10, official release (LGPL 3+ / GPL 2+)
+  ffmpeg-7.1.1.tar.xz  FFmpeg 7.1.1, official release, built as LGPL (see scripts/build-deps.sh)
+  steam-bridge/    lsteamclient from Valve's Proton, adapted for the macOS Steam client, and Tessera's steam.exe
+
+Build order (macOS on Apple silicon, Xcode, llvm-mingw for the Windows side): scripts/build-deps.sh,
+scripts/build-wine.sh, scripts/build-bridge.sh, scripts/assemble.sh. The scripts expect these folders under
+~/.tessera/build (see the paths at the top of each script).
+EOF
+find "$STAGE" -name ".git" -prune -exec rm -rf {} +
+echo "== archive"
+tar -C "$TMP" -cJf "$OUT/$NAME.tar.xz" "$NAME"          # macOS tar writes xz itself
+rm -rf "$TMP"
+du -h "$OUT/$NAME.tar.xz" | cut -f1 | sed "s|^|   $OUT/$NAME.tar.xz: |"

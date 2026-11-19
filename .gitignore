@@ -1,0 +1,9 @@
+app/.build/
+tool/build/
+steampatch/build/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+docs/trello_board.txt
+docs/trello_plan.json
