@@ -463,6 +463,47 @@ stageBackend(prefix, backendDir: env["TESSERA_BACKEND_DIR"])
 let steamCwd = FileManager.default.currentDirectoryPath
 let gameDir = steamCwd != "/" && FileManager.default.fileExists(atPath: steamCwd)
     ? URL(fileURLWithPath: steamCwd) : URL(fileURLWithPath: exePath).deletingLastPathComponent()
+// Steam's first-start scripts run Microsoft's installers. Older scripts give the Visual C++ installers no switches, so
+// they open their licence window and wait. Before Steam's script runner reads the script, the quiet switch is added
+// where the script has none (/q: tested with the 2005 SP1 package, accepted by the later ones too). DirectX's
+// DXSETUP is left alone: its /silent mode fails under Wine (it cannot verify the signatures of its .cab files).
+func quietInstallScript(_ script: URL) {
+    guard var text = try? String(contentsOf: script, encoding: .utf8) else { return }
+    let quiet: [(suffix: String, args: String)] = [("vcredist_x86.exe", "/q"), ("vcredist_x64.exe", "/q")]
+    var lines = text.components(separatedBy: "\n")
+    var i = 0, added = 0
+    while i < lines.count {
+        let line = lines[i]
+        // "process N"   "path"
+        if let r = line.range(of: #"^(\s*)"process (\d+)"\s+"([^"]*)""#, options: .regularExpression) {
+            let match = String(line[r])
+            let indent = String(match.prefix { $0 == "\t" || $0 == " " })
+            let number = match.components(separatedBy: "\"")[1].replacingOccurrences(of: "process ", with: "")
+            let path = match.components(separatedBy: "\"")[3].lowercased()
+            // does the same block already name arguments for this process?
+            var j = i + 1, hasCommand = false
+            while j < lines.count, !lines[j].contains("}") {
+                if lines[j].contains("\"command \(number)\"") { hasCommand = true; break }
+                j += 1
+            }
+            if !hasCommand, let q = quiet.first(where: { path.hasSuffix($0.suffix) }) {
+                lines.insert("\(indent)\"command \(number)\"\t\t\"\(q.args)\"", at: i + 1)
+                added += 1
+                i += 1
+            }
+        }
+        i += 1
+    }
+    guard added > 0 else { return }
+    text = lines.joined(separator: "\n")
+    if (try? text.write(to: script, atomically: true, encoding: .utf8)) != nil {
+        log("install script: silent switches added for \(added) installer(s)")
+    }
+}
+if URL(fileURLWithPath: exePath).lastPathComponent.lowercased() == "iscriptevaluator.exe",
+   let arg = gameArgs.first(where: { $0.lowercased().hasSuffix(".vdf") }) {
+    quietInstallScript(gameDir.appendingPathComponent(arg.replacingOccurrences(of: "\\", with: "/")))
+}
 log("runtime \(runtime.root.path)")
 let tesseraVars = env.keys.filter { $0.hasPrefix("TESSERA_") }.sorted().map { "\($0)=\(env[$0]!)" }
 if !tesseraVars.isEmpty { log("settings \(tesseraVars.joined(separator: " "))") }
