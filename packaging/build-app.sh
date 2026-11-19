@@ -11,7 +11,7 @@ B=${TESSERA_BUILD:-$HOME/.tessera/build}
 RUNTIME=${TESSERA_RUNTIME:-$B/rt/out/Runtime}            # runtime/assemble.sh
 OUT=$B/app
 APP=$OUT/Tessera.app
-VERSION=${TESSERA_VERSION:-$(cat "$ROOT/VERSION")}       # major.minor.fix, no leading zeros: 2.0.0 major update, 1.3.0 improvements, 1.2.1 bug fixes
+VERSION=${TESSERA_VERSION:-$(cat "$ROOT/VERSION")}       # major.minor.fix, no leading zeros: x.0.0 a big update, 0.x.0 improvements once no known bugs are left, 0.0.x bug fixes and optimisation
 
 echo "== app binary"
 (cd "$ROOT/app" && swift build -c release --arch arm64 2>&1 | grep -E "error|warning: |Build complete" || true)
