@@ -32,6 +32,12 @@ enum SteamSetup {
     }
 
     static let insertKey = "DYLD_INSERT_LIBRARIES"
+    /// Steam maps a game's Windows save folders (Saved Games, Documents, AppData) into its prefix, which Steam Cloud
+    /// needs, only for compatibility tools whose internal name contains "proton" (Steam checks the name when it
+    /// registers a tool). Tessera's tool is registered as "tessera_proton"; up to 1.2.6 it was "tessera". People see
+    /// "Tessera" either way (display_name).
+    static let toolName = "tessera_proton"
+    static let legacyToolNames = ["tessera"]
     /// Valve's original files, kept per Steam.app location ("/Applications/Steam.app" -> "Applications_Steam.app").
     static var backupDir: URL {
         let key = Paths.steamApp.path.split(separator: "/").joined(separator: "_")
@@ -53,6 +59,9 @@ enum SteamSetup {
         }
         if !fm.fileExists(atPath: Paths.runtimeLink.appendingPathComponent("bin/wineloader").path) {
             return .needsRepair("the Windows runtime is missing")
+        }
+        if CompatMappings.uses(legacyToolNames) {
+            return .needsRepair("Steam has to restart once to finish the update (Steam Cloud saves)")
         }
         return .installed
     }
@@ -91,6 +100,9 @@ enum SteamSetup {
         }
         try replace(Paths.steamLibrary, with: Paths.bundledSteamLibrary)
         try replace(Paths.compatTool, with: Paths.bundledCompatTool)
+        // Games still mapped to the earlier name keep their tool until Steam is closed and install() renames them
+        // (Steam rewrites its settings when it quits, so they are not edited while it runs).
+        if CompatMappings.uses(legacyToolNames) { try registerTool(as: legacyToolNames[0]) }
         try? fm.removeItem(at: Paths.runtimeLink)
         try fm.createSymbolicLink(at: Paths.runtimeLink, withDestinationURL: Paths.bundledRuntime)
         // A downloaded app arrives quarantined, and copies keep the flag. macOS stops a quarantined program or library
@@ -149,11 +161,19 @@ enum SteamSetup {
 
     static func install(useForAllWindowsGames: Bool, setDefaultTool: Bool = true) throws {
         guard quitSteam() else { throw SetupError.steamRunning }
+        try CompatMappings.renameTool(from: legacyToolNames, to: toolName)
         try installFiles()
         try patchSteamApp()
         if setDefaultTool {
-            try CompatMappings.setDefaultTool("tessera", replacingOtherTools: useForAllWindowsGames)
+            try CompatMappings.setDefaultTool(toolName, replacingOtherTools: useForAllWindowsGames)
         }
+    }
+
+    /// The internal name the compatibility tool is registered under in Steam (compatibilitytool.vdf).
+    static func registerTool(as name: String) throws {
+        let vdf = Paths.compatTool.appendingPathComponent("compatibilitytool.vdf")
+        let text = try String(contentsOf: vdf, encoding: .utf8)
+        try text.replacingOccurrences(of: "\"\(toolName)\"", with: "\"\(name)\"").write(to: vdf, atomically: true, encoding: .utf8)
     }
 
     static func patchSteamApp() throws {
@@ -215,7 +235,7 @@ enum SteamSetup {
             registerWithLaunchServices()
         }
         try? fm.removeItem(at: backupDir)
-        try? CompatMappings.removeTool("tessera")
+        try? CompatMappings.removeTool([toolName] + legacyToolNames)
         // Steam no longer loads them; per-game settings and logs stay in case Tessera is set up again
         for item in [Paths.steamLibrary.deletingLastPathComponent(), Paths.compatRoot, Paths.runtimeLink, Paths.prefixTemplates] {
             try? fm.removeItem(at: item)
@@ -266,10 +286,26 @@ enum CompatMappings {
         }
     }
 
-    static func removeTool(_ tool: String) throws {
+    /// Whether any game is mapped to one of these tool names.
+    static func uses(_ tools: [String]) -> Bool {
+        read().values.contains { tools.contains($0.name) }
+    }
+
+    /// Moves every game mapped to one of the old tool names to the new one (Steam must be closed).
+    static func renameTool(from old: [String], to new: String) throws {
+        guard uses(old) else { return }
+        try edit { m in
+            for (id, var entry) in m where old.contains(entry.name) {
+                entry.name = new
+                m[id] = entry
+            }
+        }
+    }
+
+    static func removeTool(_ tools: [String]) throws {
         let previous = (try? JSONDecoder().decode([String: [String]].self, from: Data(contentsOf: previousChoicesFile))) ?? [:]
         try edit { m in
-            for (id, entry) in m where entry.name == tool {
+            for (id, entry) in m where tools.contains(entry.name) {
                 if let p = previous[id], p.count == 3 {
                     m[id] = Mapping(name: p[0], config: p[1], priority: p[2])     // the user's earlier choice
                 } else {

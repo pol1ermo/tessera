@@ -32,12 +32,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/steam" "$APP/Contents/Re
 cp "$BIN" "$APP/Contents/MacOS/Tessera"
 cp "$ROOT/steampatch/build/tessera_steam.dylib" "$APP/Contents/Resources/steam/"
 cp "$ROOT/tool/build/run" "$APP/Contents/Resources/compat/tessera/run"
+# The internal name contains "proton": only then does Steam map Windows save folders (Saved Games, Documents, AppData)
+# into the game's prefix for Steam Cloud. Steam shows display_name. SteamSetup.toolName must match.
 cat > "$APP/Contents/Resources/compat/tessera/compatibilitytool.vdf" <<'EOF'
 "compatibilitytools"
 {
   "compat_tools"
   {
-    "tessera"
+    "tessera_proton"
     {
       "install_path" "."
       "display_name" "Tessera"
