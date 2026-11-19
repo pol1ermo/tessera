@@ -117,7 +117,9 @@ mkdir -p "$OUT/lib64/apple_gptk" "$OUT/lib/wined3d/x86_64-windows"
 ditto "$GPTK/external" "$OUT/lib64/apple_gptk/external"
 ditto "$GPTK/wine" "$OUT/lib64/apple_gptk/wine"
 W="$OUT/lib/wine/x86_64-windows"; U="$OUT/lib/wine/x86_64-unix"
-for d in d3d10 d3d11 d3d12 dxgi; do
+# d3d12core: D3DMetal 4 brings its own (its d3d12.dll loads it); Wine's goes to the WineD3D folder then
+for d in d3d10 d3d11 d3d12 d3d12core dxgi; do
+    [ -f "$GPTK/wine/x86_64-windows/$d.dll" ] || continue
     [ -f "$W/$d.dll" ] && mv "$W/$d.dll" "$OUT/lib/wined3d/x86_64-windows/$d.dll"
     cp "$GPTK/wine/x86_64-windows/$d.dll" "$W/$d.dll"
     ln -sf "../../../lib64/apple_gptk/external/libd3dshared.dylib" "$U/$d.so"

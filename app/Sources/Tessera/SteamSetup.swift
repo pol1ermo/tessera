@@ -160,7 +160,11 @@ enum SteamSetup {
         let fm = FileManager.default
         let contents = Paths.steamApp.appendingPathComponent("Contents")
         let plistURL = contents.appendingPathComponent("Info.plist")
-        // back up Valve's originals once (a second install must not back up our own changes)
+        // Back up Valve's originals whenever Steam.app is Valve's own: a backup from an earlier setup may be older than
+        // the Steam launcher now (Steam updates it), and "Remove from Steam" would put old files back. Steam.app
+        // already set up keeps its backup (a second install must not back up our own changes).
+        let steamIsOriginal = steamEnvironment()[insertKey] == nil
+        if steamIsOriginal { try? fm.removeItem(at: backupDir) }
         if !fm.fileExists(atPath: backupDir.appendingPathComponent("Info.plist").path) {
             try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
             try fm.copyItem(at: plistURL, to: backupDir.appendingPathComponent("Info.plist"))
