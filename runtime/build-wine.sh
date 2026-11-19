@@ -50,6 +50,15 @@ if [ -f "$RT/deps/lib/libavcodec.61.dylib" ]; then
 else
     FFMPEG_ARGS="--without-ffmpeg"
 fi
+# video and sound decoding for Windows Media, Media Foundation and DirectShow (winegstreamer) needs GStreamer;
+# build-gstreamer.sh makes it
+if [ -f "$RT/deps/lib/libgstreamer-1.0.0.dylib" ]; then
+    GST_ARGS="--with-gstreamer"
+    export GSTREAMER_CFLAGS="-I$RT/deps/include/gstreamer-1.0 -I$RT/deps/include/glib-2.0 -I$RT/deps/lib/glib-2.0/include"
+    export GSTREAMER_LIBS="-L$RT/deps/lib -lgstvideo-1.0 -lgstaudio-1.0 -lgsttag-1.0 -lgstbase-1.0 -lgstreamer-1.0 -lgobject-2.0 -lglib-2.0"
+else
+    GST_ARGS="--without-gstreamer"
+fi
 "$RT/src/wine/configure" --prefix=/opt/tessera \
     --build=x86_64-apple-darwin --host=x86_64-apple-darwin --enable-archs=i386,x86_64 \
     CC="$APPLE_CLANG -arch x86_64 -isysroot $SDK" CXX="$APPLE_CLANGXX -arch x86_64 -isysroot $SDK" \
@@ -59,13 +68,14 @@ fi
     GNUTLS_CFLAGS="-I$RT/deps/include" GNUTLS_LIBS="-L$RT/deps/lib -lgnutls" \
     --disable-tests --disable-win16 \
     --with-freetype --with-gnutls --with-cups --with-coreaudio --with-opencl --with-vulkan \
-    $FFMPEG_ARGS --without-gstreamer --without-x --without-wayland --without-fontconfig \
+    $FFMPEG_ARGS $GST_ARGS --without-x --without-wayland --without-fontconfig \
     --without-sane --without-krb5 --without-gssapi --without-netapi --without-pcap --without-sdl --without-usb \
     --without-v4l2 --without-capi --without-gphoto --without-dbus --without-inotify --without-pulse \
     --without-alsa --without-oss --without-udev \
     > "$RT/wine-configure.log" 2>&1 || { tail -30 "$RT/wine-configure.log"; exit 1; }
 grep -E "^configure: (WARNING|error)|libfreetype|libgnutls|MoltenVK" "$RT/wine-configure.log" | grep -v "^configure: WARNING: unrecognized" | head -20
 grep -E "^#define SONAME_LIB(FREETYPE|GNUTLS|MOLTENVK|VULKAN|AVFORMAT|AVCODEC)|HAVE_FFMPEG" include/config.h || true
+grep -q "^dlls/winegstreamer" Makefile 2>/dev/null && grep -c "winegstreamer" Makefile | sed "s/^/winegstreamer rules in Makefile: /" || true
 fi
 
 step "make"

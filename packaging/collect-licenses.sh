@@ -19,6 +19,16 @@ cp "$S/gnutls/gnutls/doc/COPYING.LESSER" "$DEST/GnuTLS - LGPL 2.1.txt"
 cp "$RT/deps-build/nettle-3.10/COPYING.LESSERv3" "$DEST/Nettle - LGPL 3.txt"
 cp "$S/gnutls/gmp/COPYING.LESSERv3"   "$DEST/GMP - LGPL 3.txt"
 cp "$S/moltenvk/LICENSE"              "$DEST/MoltenVK - Apache 2.0.txt"
+FF=$RT/deps-build/ffmpeg-7.1.1
+cp "$FF/COPYING.LGPLv2.1"             "$DEST/FFmpeg - LGPL 2.1.txt"
+cp "$FF/LICENSE.md"                   "$DEST/FFmpeg - licensing.txt"
+GST=$RT/gst-build/gstreamer-1.28.9
+cp "$GST/LICENSE"                     "$DEST/GStreamer - LGPL 2.1.txt"
+cp "$GST/subprojects/glib-2.86.3/COPYING" "$DEST/GLib - LGPL 2.1.txt"
+cp "$GST/subprojects/proxy-libintl-0.5/COPYING" "$DEST/proxy-libintl - LGPL 2.1.txt"
+cp "$GST/subprojects/libffi-meson-3.2.9999.5/LICENSE" "$DEST/libffi - MIT.txt"
+cp "$GST/subprojects/pcre2-10.47/LICENCE.md" "$DEST/PCRE2 - BSD.txt"
+cp "$GST/subprojects/orc/COPYING"     "$DEST/orc - BSD.txt"
 cp "$L/DXMT-LICENSE.txt"              "$DEST/DXMT - MIT.txt"
 cp "$P/LICENSE"                       "$DEST/Steam bridge - Proton.txt"
 cp "$P/LICENSE.proton"                "$DEST/Steam bridge - Proton license.txt"
@@ -49,12 +59,17 @@ Windows runtime (Contents/Resources/Runtime):
   GnuTLS ............... GNU LGPL 2.1 or later.
   Nettle, GMP .......... GNU LGPL 3 or later.
   MoltenVK ............. Apache License 2.0.
+  FFmpeg ............... GNU LGPL 2.1 or later (built without its optional GPL parts).
+  GStreamer ............ GNU LGPL 2.1 or later (core, base, good, ugly, bad and libav plugins Wine uses).
+  GLib, proxy-libintl .. GNU LGPL 2.1 or later.
+  libffi ............... MIT License.   PCRE2 ......... BSD licence.   orc ............ BSD licence.
   DXMT ................. MIT License. Copyright (c) 2023 Feifan He.
   D3DMetal ............. Apple Game Porting Toolkit redistributables, included unmodified and distributed
                          free of charge for non-commercial use under Apple's licence (see the D3DMetal files).
   Steam bridge ......... built from the lsteamclient sources of Valve's Proton (see the Steam bridge files).
 
-Source code: the complete source of Wine, FreeType, GnuTLS, Nettle and GMP as built for this release,
+Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib as built
+for this release,
 including Tessera's changes and build scripts, is published as a separate download next to each Tessera
 release. You may modify these libraries and use your modified versions with Tessera.
 EOF

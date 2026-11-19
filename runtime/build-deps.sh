@@ -18,6 +18,8 @@ JOBS=$(sysctl -n hw.ncpu)
 SDK=$(xcrun --show-sdk-path)
 NETTLE_URL=https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz
 FFMPEG_VERSION=7.1.1
+NASM_VERSION=3.01
+NASM_SHA256=b7324cbe86e767b65f26f467ed8b12ad80e124e3ccb89076855c98e43a9eddd4
 
 export MACOSX_DEPLOYMENT_TARGET=11.0
 export CC="clang -arch x86_64"
@@ -82,15 +84,33 @@ rm -rf "$BUILD/gnutls" && cp -pR "$SRC/gnutls/gnutls" "$BUILD/gnutls"
     || { grep -E "error:|Error [0-9]" "$BUILD/gnutls.log" | head -20; exit 1; }
 }
 
-# FFmpeg (LGPL build: no --enable-gpl / --enable-nonfree): Wine's media foundation (winedmo) decodes game videos
-# with it. No nasm here, so without x86 assembly (Rosetta translates the C code either way).
+# nasm assembles FFmpeg's hand-written x86 SIMD code (2-3x faster decoding than its plain C versions, also under
+# Rosetta). A build tool only, built for this Mac: the unmodified release tarball from Debian's mirror, checked
+# against the SHA-256 in Debian's source description (nasm's own site has a broken certificate from here).
+step "nasm"
+NASM=$RT/tools/bin/nasm
+[ -x "$NASM" ] || {
+[ -f "$DL/nasm_$NASM_VERSION.orig.tar.xz" ] || curl -fsSL -o "$DL/nasm_$NASM_VERSION.orig.tar.xz" \
+    "https://deb.debian.org/debian/pool/main/n/nasm/nasm_$NASM_VERSION.orig.tar.xz"
+echo "$NASM_SHA256  $DL/nasm_$NASM_VERSION.orig.tar.xz" | shasum -a 256 -c - > /dev/null || { echo "nasm checksum differs"; exit 1; }
+rm -rf "$BUILD/nasm-$NASM_VERSION" && tar -xJf "$DL/nasm_$NASM_VERSION.orig.tar.xz" -C "$BUILD"
+(cd "$BUILD/nasm-$NASM_VERSION" && env -u CPPFLAGS -u LDFLAGS CC=clang CFLAGS=-O2 ./configure --prefix="$RT/tools" \
+    > ../nasm.log 2>&1 && make -j "$JOBS" nasm >> ../nasm.log 2>&1 && mkdir -p "$RT/tools/bin" && cp nasm "$NASM") \
+    || { tail -20 "$BUILD/nasm.log"; exit 1; }
+}
+"$NASM" -v
+# by name only: FFmpeg stores its configure line in libavutil, and a full path would name this build folder
+export PATH="$RT/tools/bin:$PATH"
+
+# FFmpeg (LGPL build: no --enable-gpl / --enable-nonfree): Wine's media foundation (winedmo) and GStreamer's
+# gst-libav decode game videos with it, with its x86 assembly (nasm above).
 step "FFmpeg"
-built libavcodec.61.dylib || {
+{ built libavcodec.61.dylib && ! strings -a "$PREFIX/lib/libavutil.59.dylib" | grep -q -- "--disable-x86asm"; } || {
 [ -f "$DL/ffmpeg-$FFMPEG_VERSION.tar.xz" ] || curl -fsSL -o "$DL/ffmpeg-$FFMPEG_VERSION.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
 rm -rf "$BUILD/ffmpeg-$FFMPEG_VERSION" && tar -xJf "$DL/ffmpeg-$FFMPEG_VERSION.tar.xz" -C "$BUILD"
 # FFmpeg keeps its whole configure line inside libavutil, so it is configured for a neutral prefix and staged
 (cd "$BUILD/ffmpeg-$FFMPEG_VERSION" && $X86 ./configure --prefix=/opt/tessera-deps --cc="clang -arch x86_64" \
-    --enable-shared --disable-static --disable-programs --disable-doc --disable-network --disable-x86asm \
+    --enable-shared --disable-static --disable-programs --disable-doc --disable-network --x86asmexe=nasm \
     --disable-avdevice --disable-postproc --disable-autodetect --enable-zlib --enable-pic \
     --install-name-dir=/opt/tessera-deps/lib > ../ffmpeg.log 2>&1 \
     && $X86 make -j "$JOBS" >> ../ffmpeg.log 2>&1 && rm -rf ../ffmpeg-stage \

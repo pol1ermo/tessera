@@ -7,6 +7,7 @@
 // Steam updates as long as the code shape stays the same) and patches them.
 //
 // Every action is logged to ~/Library/Logs/Tessera/steam.log.
+#include <crt_externs.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <mach-o/dyld.h>
@@ -369,13 +370,24 @@ __attribute__((used, section("__DATA,__interpose"))) static struct { const void 
     {(const void *)tessera_execv, (const void *)execv},
 };
 
+void tessera_activation_init(void);
+
 __attribute__((constructor)) static void tessera_steam_init(void) {
     char exe[1024] = "";
     uint32_t sz = sizeof exe;
     _NSGetExecutablePath(exe, &sz);
     const char *base = strrchr(exe, '/');
     base = base ? base + 1 : exe;
-    if (strcmp(base, "steam_osx")) return;          // only the Steam client itself; helpers inherit the variable
+    if (!strcmp(base, "Steam Helper")) {
+        // Steam's windows belong to the main process of its web helper (the one without a --type= argument): that
+        // is the app macOS has in front while Steam is, so the hand-over to a starting game comes from there
+        int argc = *_NSGetArgc();
+        char **argv = *_NSGetArgv();
+        for (int i = 1; i < argc; i++) if (!strncmp(argv[i], "--type=", 7)) return;
+        tessera_activation_init();                  // games come to the front when they open (activation.m)
+        return;
+    }
+    if (strcmp(base, "steam_osx")) return;          // only the Steam client itself; other helpers inherit the variable
     tlog("loaded into %s", exe);
     // Mac Steam does not know its own folder yet when it scans for compatibility tools, so tell it where to look:
     // Tessera's own tool folder (next to this library inside Tessera.app) and Steam's compatibilitytools.d.

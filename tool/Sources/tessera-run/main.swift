@@ -98,7 +98,7 @@ func prefixURL() -> URL {
     return compat.appendingPathComponent("tessera")
 }
 
-func wineEnvironment(prefix: URL) -> [String: String] {
+func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     var env = steamEnv
     let root = runtime.root.path
     env["WINEPREFIX"] = prefix.path
@@ -113,6 +113,20 @@ func wineEnvironment(prefix: URL) -> [String: String] {
     // fallback or quit without). A game's settings can turn it off with ROSETTA_ADVERTISE_AVX=0.
     env["ROSETTA_ADVERTISE_AVX"] = env["ROSETTA_ADVERTISE_AVX"] ?? "1"
     env["WINEDEBUG"] = env["WINEDEBUG"] ?? "-all"
+    // GStreamer (winegstreamer: game videos and sound through Windows Media, Media Foundation, DirectShow) loads
+    // only the runtime's own plugins - never a GStreamer installed on the Mac - and keeps its plugin index in
+    // Tessera's cache folder. The index is built inside the game's process (no separate scanner program).
+    let gstPlugins = "\(root)/lib64/gstreamer-1.0"
+    if FileManager.default.fileExists(atPath: gstPlugins) {
+        env["GST_PLUGIN_SYSTEM_PATH_1_0"] = gstPlugins
+        env["GST_PLUGIN_PATH_1_0"] = ""
+        env.removeValue(forKey: "GST_PLUGIN_PATH")
+        env.removeValue(forKey: "GST_PLUGIN_SCANNER_1_0")
+        env["GST_REGISTRY_FORK"] = "no"
+        let cache = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/Tessera")
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        env["GST_REGISTRY_1_0"] = cache.appendingPathComponent("gstreamer-registry.bin").path
+    }
     // Per-game settings: ~/Library/Application Support/Tessera/games/<appid>.env, one NAME=value per line ("#" comments).
     let settings = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Tessera/games/\(appID).env")
@@ -138,7 +152,12 @@ func wineEnvironment(prefix: URL) -> [String: String] {
                      env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
     env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
-    let graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
+    // Automatic (no choice in the game's settings): D3DMetal, except for engines D3DMetal is known to trip up.
+    var graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
+    if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe) {
+        graphics = "dxmt"
+        log("\(engine) game: graphics through DXMT (automatic choice)")
+    }
     switch graphics {
     case "dxmt": env["TESSERA_BACKEND_DIR"] = "\(root)/lib/dxmt"
     case "wined3d": env["TESSERA_BACKEND_DIR"] = "\(root)/lib/wined3d"
@@ -150,9 +169,23 @@ func wineEnvironment(prefix: URL) -> [String: String] {
         // inside the Intel (Rosetta) process, so Wine's exception handling knows about it
         env["TESSERA_APPLEGPTK_LIBD3DSHARED_PATH"] = "\(root)/lib64/apple_gptk/external/libd3dshared.dylib"
     }
-    // Steam's own overlay libraries are for native games; Tessera adds them back when the overlay is supported.
+    // Steam's overlay (Shift+Tab): Steam names its libraries in STEAM_DYLD_INSERT_LIBRARIES; Tessera's Wine puts them
+    // into each Windows program (TESSERA_OVERLAY_DYLIBS). On unless a game's settings say TESSERA_STEAM_OVERLAY=0.
+    // Steam's DYLD_INSERT_LIBRARIES itself (with Tessera's Steam library) is not for games.
     env.removeValue(forKey: "DYLD_INSERT_LIBRARIES")
+    if env["TESSERA_STEAM_OVERLAY"] != "0", let overlay = steamEnv["STEAM_DYLD_INSERT_LIBRARIES"], !overlay.isEmpty {
+        env["TESSERA_OVERLAY_DYLIBS"] = overlay
+    }
     return env
+}
+
+/// GameMaker's DirectX 11 runner asks for 8x and 16x anti-aliasing levels; D3DMetal answers "invalid argument"
+/// (Windows and DXMT answer "no quality levels") and the game shows an error box for each answer before it starts.
+/// GameMaker games keep their game data in data.win next to the program.
+func engineNeedingDXMT(exe: String) -> String? {
+    let dir = URL(fileURLWithPath: exe).deletingLastPathComponent()
+    if FileManager.default.fileExists(atPath: dir.appendingPathComponent("data.win").path) { return "GameMaker" }
+    return nil
 }
 
 // MARK: - processes
@@ -177,17 +210,74 @@ func killPrefix(_ env: [String: String]) {
 
 // MARK: - prefix
 
+// Wine's first set-up of a Windows folder takes 12-16 s. Tessera does it once per runtime, keeps the result as a
+// template and gives every new game an APFS clone of it (copy-on-write: instant, no extra space).
+let templatesDir = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/Tessera/templates")
+
+func buildPrefix(_ dir: URL, env: [String: String]) {
+    var e = env
+    e["WINEPREFIX"] = dir.path
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    runProcess(runtime.loader, ["wineboot", "--init"], env: e)
+    // wineserver writes the registry when it exits, so wait for it before anything reads the folder
+    runProcess(runtime.server, ["-w"], env: e)
+}
+
+/// FNV-1a: a name that stays the same between runs (Swift's Hasher changes per process)
+func stableHash(_ text: String) -> String {
+    var h: UInt64 = 0xcbf29ce484222325
+    for byte in text.utf8 { h = (h ^ UInt64(byte)) &* 0x100000001b3 }
+    return String(h, radix: 16)
+}
+
+/// The template for this runtime, named after the runtime's place and its wine.inf (Wine compares that file to tell
+/// whether a Windows folder is current); built on first use, earlier runtimes' templates are removed.
+func prefixTemplate(env: [String: String]) -> URL? {
+    let fm = FileManager.default
+    let inf = runtime.root.appendingPathComponent("share/wine/wine.inf")
+    guard let attrs = try? fm.attributesOfItem(atPath: inf.path),
+          let changed = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 else { return nil }
+    let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)")
+    let template = templatesDir.appendingPathComponent(key)
+    let ready = { fm.fileExists(atPath: template.appendingPathComponent("system.reg").path) }
+    if ready() { return template }
+    log("building the Windows folder template (once per Tessera version)")
+    // built under a temporary name, so two games starting at once never clone a half-built one
+    let building = templatesDir.appendingPathComponent("\(key).building-\(getpid())")
+    try? fm.removeItem(at: building)
+    buildPrefix(building, env: env)
+    if fm.fileExists(atPath: building.appendingPathComponent("system.reg").path), !ready() {
+        try? fm.moveItem(at: building, to: template)
+    }
+    try? fm.removeItem(at: building)
+    for old in (try? fm.contentsOfDirectory(at: templatesDir, includingPropertiesForKeys: nil)) ?? []
+    where old.lastPathComponent != key && !old.lastPathComponent.contains(".building-") {
+        try? fm.removeItem(at: old)
+    }
+    return ready() ? template : nil
+}
+
 func ensurePrefix(_ prefix: URL, env: [String: String]) {
-    let marker = prefix.appendingPathComponent("system.reg")
-    if FileManager.default.fileExists(atPath: marker.path) { return }
+    let fm = FileManager.default
+    if fm.fileExists(atPath: prefix.appendingPathComponent("system.reg").path) { return }
     log("creating prefix \(prefix.path)")
-    try? FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
     let started = Date()
-    runProcess(runtime.loader, ["wineboot", "--init"], env: env)
-    // wineserver writes the registry when it exits, so wait for it before anything reads the prefix
-    runProcess(runtime.server, ["-w"], env: env)
-    FileManager.default.createFile(atPath: prefix.appendingPathComponent(".tessera").path, contents: Data("made by Tessera\n".utf8))
-    log("prefix ready after \(Int(Date().timeIntervalSince(started))) s")
+    var cloned = false
+    if let template = prefixTemplate(env: env) {
+        try? fm.createDirectory(at: prefix, withIntermediateDirectories: true)
+        // -c clones on APFS (cp copies normally where it can't, e.g. a Steam library on another disk)
+        let cp = Process()
+        cp.executableURL = URL(fileURLWithPath: "/bin/cp")
+        cp.arguments = ["-cpR", template.path + "/.", prefix.path + "/"]
+        var copied = false
+        if (try? cp.run()) != nil { cp.waitUntilExit(); copied = cp.terminationStatus == 0 }
+        cloned = copied && fm.fileExists(atPath: prefix.appendingPathComponent("system.reg").path)
+        if !cloned { log("could not copy the template; setting the folder up directly") }
+    }
+    if !cloned { buildPrefix(prefix, env: env) }
+    fm.createFile(atPath: prefix.appendingPathComponent(".tessera").path, contents: Data("made by Tessera\n".utf8))
+    log("prefix ready after \(Int(Date().timeIntervalSince(started))) s\(cloned ? " (from the template)" : "")")
 }
 
 // MARK: - path conversion (Steam asks for these when it runs install scripts)
@@ -231,7 +321,7 @@ default:
 guard let exePath = args.first else { fail("no program to run") }
 let gameArgs = Array(args.dropFirst())
 let prefix = prefixURL()
-let env = wineEnvironment(prefix: prefix)
+let env = wineEnvironment(prefix: prefix, exe: exePath)
 ensurePrefix(prefix, env: env)
 
 // Steam's Stop button and quitting Steam end this process; take the game's processes down with it.

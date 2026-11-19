@@ -55,6 +55,36 @@ LIBS="libfreetype.6.dylib libgnutls.30.dylib libnettle.8.dylib libhogweed.6.dyli
 for ff in libavformat.61.dylib libavcodec.61.dylib libavutil.59.dylib libswresample.5.dylib; do
     [ -f "$DEPS/lib/$ff" ] && LIBS="$LIBS $ff"
 done
+# GStreamer (build-gstreamer.sh): its plugins go to lib64/gstreamer-1.0; the libraries that winegstreamer.so and the
+# plugins link - followed link by link, so none of the unused GStreamer libraries come along - join the list above
+GST_PLUGINS=$DEPS/lib/gstreamer-1.0
+if [ -f "$OUT/lib/wine/x86_64-unix/winegstreamer.so" ] && [ -d "$GST_PLUGINS" ]; then
+    todo="$OUT/lib/wine/x86_64-unix/winegstreamer.so $(ls "$GST_PLUGINS"/*.dylib)"
+    seen=" "
+    while [ -n "$todo" ]; do
+        set -- $todo; f=$1; shift; todo="$*"
+        for dep in $(otool -L "$f" | awk 'NR>1 {print $1}' | grep -E "^($DEPS|/opt/tessera-deps)/lib/[^/]+\.dylib$" || true); do
+            name=$(basename "$dep")
+            case "$seen" in *" $name "*) continue;; esac
+            seen="$seen$name "
+            todo="$todo $DEPS/lib/$name"
+        done
+    done
+    for name in $seen; do case " $LIBS " in *" $name "*) ;; *) LIBS="$LIBS $name";; esac; done
+    mkdir -p "$OUT/lib64/gstreamer-1.0"
+    for plugin in "$GST_PLUGINS"/*.dylib; do
+        f="$OUT/lib64/gstreamer-1.0/$(basename "$plugin")"
+        cp -L "$plugin" "$f"; chmod u+w "$f"
+        install_name_tool -id "@rpath/$(basename "$plugin")" "$f" 2>/dev/null
+        strip -S -x "$f" 2>/dev/null || true
+        for dep in $(otool -L "$f" | awk 'NR>1 {print $1}' | grep -E "^($DEPS|/opt/tessera-deps)/lib/" || true); do
+            install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f" 2>/dev/null
+        done
+        install_name_tool -add_rpath @loader_path/.. "$f" 2>/dev/null || true
+        codesign --force --sign - "$f" 2>/dev/null
+    done
+    echo "   GStreamer: $(ls "$OUT/lib64/gstreamer-1.0" | wc -l | tr -d ' ') plugins,$seen"
+fi
 for name in $LIBS; do
     f="$OUT/lib64/$name"
     cp -L "$DEPS/lib/$name" "$f"

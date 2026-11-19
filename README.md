@@ -8,7 +8,7 @@ game, they keep Steam features (achievements, friends, cloud saves), and they dr
 
 ## Download
 
-Get **Tessera-xx.xx.xx.dmg** from [Releases](../../releases/latest).
+Get the newest **Tessera-x.y.z.dmg** from [Releases](../../releases/latest).
 
 Requirements: a Mac with Apple silicon (M1 or newer), macOS 14 Sonoma or later, and [Steam for Mac](https://store.steampowered.com/about/).
 
@@ -25,7 +25,7 @@ Requirements: a Mac with Apple silicon (M1 or newer), macOS 14 Sonoma or later, 
 
 ## Licences
 
-Wine, FreeType, GnuTLS, Nettle, GMP and FFmpeg are LGPL — their exact sources with Tessera's changes are attached
-to every release (`tessera-runtime-src-*.tar.xz`). D3DMetal is Apple's Game Porting Toolkit redistributable,
+Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib are LGPL — their exact sources with Tessera's
+changes are attached to every release (`tessera-runtime-src-*.tar.xz`). D3DMetal is Apple's Game Porting Toolkit redistributable,
 included unmodified and distributed free of charge (non-commercial). DXMT is MIT, MoltenVK Apache 2.0, the Steam
 bridge comes from Valve's Proton. All licence texts are inside the app: `Tessera.app/Contents/Resources/Licenses`.

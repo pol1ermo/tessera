@@ -3,8 +3,9 @@
 
   * no file or folder name mentions CrossOver, CodeWeavers or NotProton
   * no file content mentions them either - as plain text or as Windows (UTF-16) text - except where the law or a
-    third party requires it: copyright and author credits (Wine's embedded scripts, a font), the licence texts, and
-    FFmpeg's audio "crossover" filter, which is not a name
+    third party requires it: copyright and author credits (Wine's embedded scripts, a font, authors' e-mail addresses
+    in element metadata), the licence texts, FFmpeg's audio "crossover" filter and GStreamer's ID3 music genre
+    "Crossover", which are not names
   * no file names the build machine (its home folder)
   * Tessera.app's signature verifies, and the licences are there
 
@@ -62,6 +63,10 @@ for root, dirs, files in os.walk(app):
                 ctx = context(data, i).replace(b"\x00", b"")
                 if word.lower() == b"crossover" and "/lib64/libav" in "/" + rel:
                     pass                              # FFmpeg: the audio "crossover" filter and its messages
+                elif word == b"Crossover" and rel.endswith("/libgsttag-1.0.0.dylib") and (b"Metal" in ctx or b"Christian" in ctx):
+                    pass                              # GStreamer: "Crossover" is a music genre in the ID3 genre list
+                elif word.lower() == b"codeweavers" and i > 0 and data[i - 1:i] == b"@":
+                    notes.append(f"credit kept: {rel}: {ctx.decode('latin1').strip()[:90]}")   # an author's e-mail address
                 elif allowed_context.search(ctx) or "/share/wine/fonts/" in "/" + rel:
                     notes.append(f"credit kept: {rel}: {ctx.decode('latin1').strip()[:90]}")
                 else:

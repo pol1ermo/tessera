@@ -168,7 +168,12 @@ struct GameView: View {
                 Text(settings.graphics.detail).font(.callout).foregroundStyle(.secondary)
                 Toggle("Show the Metal performance overlay", isOn: $settings.showHUD)
                 Toggle("Ray tracing (DirectX Raytracing, D3DMetal)", isOn: $settings.raytracing)
-                    .disabled(settings.graphics != .d3dmetal)
+                    .disabled(settings.graphics == .dxmt || settings.graphics == .wined3d)
+            }
+            SwiftUI.Section("Steam") {
+                Toggle("Steam overlay (Shift+Tab)", isOn: $settings.steamOverlay)
+                Text("Friends, chat, guides and Steam's FPS counter inside the game. Turn it off for the steadiest frame times: it loads once, about a minute after the game starts.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             SwiftUI.Section {
                 HStack {

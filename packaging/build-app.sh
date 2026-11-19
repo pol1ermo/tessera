@@ -11,7 +11,7 @@ B=${TESSERA_BUILD:-$HOME/.tessera/build}
 RUNTIME=${TESSERA_RUNTIME:-$B/rt/out/Runtime}            # runtime/assemble.sh
 OUT=$B/app
 APP=$OUT/Tessera.app
-VERSION=${TESSERA_VERSION:-$(cat "$ROOT/VERSION")}       # xx.00.00 major, 00.xx.00 improvements, 00.00.xx fixes
+VERSION=${TESSERA_VERSION:-$(cat "$ROOT/VERSION")}       # major.minor.fix, no leading zeros: 2.0.0 major update, 1.3.0 improvements, 1.2.1 bug fixes
 
 echo "== app binary"
 (cd "$ROOT/app" && swift build -c release --arch arm64 2>&1 | grep -E "error|warning: |Build complete" || true)
@@ -20,7 +20,7 @@ BIN="$(cd "$ROOT/app" && swift build -c release --arch arm64 --show-bin-path)/Te
 
 echo "== Steam library and compatibility tool"
 (cd "$ROOT/steampatch/src" && clang -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 -O2 -Wall -dynamiclib \
-    -framework Foundation -o ../build/tessera_steam.dylib tessera_steam.c hook.c)
+    -framework Foundation -framework AppKit -o ../build/tessera_steam.dylib tessera_steam.c hook.c activation.m)
 (cd "$ROOT/tool" && mkdir -p build \
     && swiftc -O -target arm64-apple-macos12.0 -o build/run-arm64 Sources/tessera-run/main.swift \
     && swiftc -O -target x86_64-apple-macos12.0 -o build/run-x86_64 Sources/tessera-run/main.swift \

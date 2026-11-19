@@ -206,7 +206,7 @@ enum SteamSetup {
         try? fm.removeItem(at: backupDir)
         try? CompatMappings.removeTool("tessera")
         // Steam no longer loads them; per-game settings and logs stay in case Tessera is set up again
-        for item in [Paths.steamLibrary.deletingLastPathComponent(), Paths.compatRoot, Paths.runtimeLink] {
+        for item in [Paths.steamLibrary.deletingLastPathComponent(), Paths.compatRoot, Paths.runtimeLink, Paths.prefixTemplates] {
             try? fm.removeItem(at: item)
         }
     }

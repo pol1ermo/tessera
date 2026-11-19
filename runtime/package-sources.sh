@@ -6,6 +6,7 @@
 #   wine/        Wine 11.0 exactly as built: Tessera's changes (scripts/patch-wine.py) are already applied, and
 #                code-comment wording is neutral. Copyright and author notices are untouched.
 #   freetype/, gmp/, gnutls/, nettle-3.10.tar.gz, ffmpeg-7.1.1.tar.xz   the libraries, as released
+#   gstreamer/   GStreamer and the subprojects its build fetched, as released
 #   steam-bridge/  Valve's lsteamclient (from Proton) as adapted for the Mac Steam client, and steam.exe
 #   scripts/     Tessera's build scripts
 set -euo pipefail
@@ -49,12 +50,19 @@ cp -pR "$S/freetype" "$STAGE/freetype"
 cp -pR "$S/gnutls/gmp" "$STAGE/gmp"
 cp -pR "$S/gnutls/gnutls" "$STAGE/gnutls"
 cp "$DL/nettle-3.10.tar.gz" "$DL/ffmpeg-7.1.1.tar.xz" "$STAGE/"
+# GStreamer as released (single-repository archive) and the subprojects its build fetched (glib, proxy-libintl,
+# libffi, pcre2 with its meson build files, orc)
+GST=$RT/gst-build/gstreamer-1.28.9
+mkdir -p "$STAGE/gstreamer"
+cp "$DL/gstreamer-mono-1.28.9.tar.gz" "$STAGE/gstreamer/gstreamer-1.28.9.tar.gz"
+cp "$GST"/subprojects/packagecache/* "$STAGE/gstreamer/"
+tar -C "$GST/subprojects" --exclude .git -czf "$STAGE/gstreamer/orc-0.4.42.tar.gz" orc
 
 echo "== Steam bridge"
 cp -pR "$HOME/.tessera/build/bridge/src" "$STAGE/steam-bridge/lsteamclient"
 cp -pR "$HERE/../bridge/steam-helper" "$STAGE/steam-bridge/steam-helper"
 
-cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
+cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
    "$HERE/../bridge/build-bridge.sh" "$HERE/../bridge/mac-adapt.py" "$STAGE/scripts/"
 cat > "$STAGE/README.txt" <<'EOF'
 Sources of the Windows runtime inside Tessera
@@ -66,10 +74,13 @@ Sources of the Windows runtime inside Tessera
   gnutls/          GnuTLS 3.8.3 (LGPL 2.1+)
   nettle-3.10.tar.gz   Nettle 3.10, official release (LGPL 3+ / GPL 2+)
   ffmpeg-7.1.1.tar.xz  FFmpeg 7.1.1, official release, built as LGPL (see scripts/build-deps.sh)
+  gstreamer/       GStreamer 1.28.9 (LGPL 2.1+) as released, plus the sources its build fetched: glib 2.86.3
+                   (LGPL 2.1+), proxy-libintl 0.5 (LGPL 2.1+), libffi (MIT), pcre2 10.47 (BSD), orc 0.4.42 (BSD).
+                   Built by scripts/build-gstreamer.sh.
   steam-bridge/    lsteamclient from Valve's Proton, adapted for the macOS Steam client, and Tessera's steam.exe
 
 Build order (macOS on Apple silicon, Xcode, llvm-mingw for the Windows side): scripts/build-deps.sh,
-scripts/build-wine.sh, scripts/build-bridge.sh, scripts/assemble.sh. The scripts expect these folders under
+scripts/build-gstreamer.sh, scripts/build-wine.sh, scripts/build-bridge.sh, scripts/assemble.sh. The scripts expect these folders under
 ~/.tessera/build (see the paths at the top of each script).
 EOF
 find "$STAGE" -name ".git" -prune -exec rm -rf {} +

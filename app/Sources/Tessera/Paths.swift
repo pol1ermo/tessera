@@ -15,6 +15,8 @@ enum Paths {
     static let compatTool = compatRoot.appendingPathComponent("tessera")
     static let runtimeLink = support.appendingPathComponent("runtime")
     static let gameSettings = support.appendingPathComponent("games")
+    /// finished Windows folders the launcher clones for new games (one per runtime version)
+    static let prefixTemplates = support.appendingPathComponent("templates")
     static let backups = support.appendingPathComponent("backups")
     static let logs = home.appendingPathComponent("Library/Logs/Tessera")
 
