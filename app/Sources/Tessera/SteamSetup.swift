@@ -176,6 +176,13 @@ enum SteamSetup {
             throw SetupError.failed("Steam's Info.plist could not be read")
         }
         var env = dict["LSEnvironment"] as? [String: String] ?? [:]
+        // Set up already, with a valid signature: nothing to change. Signing again would give Steam.app a new
+        // signature, and macOS would ask again for permissions it granted to the old one (the microphone).
+        if env[insertKey] == Paths.steamLibrary.path,
+           run("/usr/bin/codesign", ["--verify", Paths.steamApp.path]).status == 0 {
+            registerWithLaunchServices()
+            return
+        }
         env[insertKey] = Paths.steamLibrary.path
         dict["LSEnvironment"] = env
         do {
