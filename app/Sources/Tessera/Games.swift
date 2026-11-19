@@ -121,7 +121,7 @@ struct GameSettings: Equatable {
     var metalFX = false
     var raytracing = false
     var steamOverlay = true
-    var fullResolution = false
+    var fullResolution = true   // the launcher's default too: a game's desktop is the screen's largest real mode
     var extra: [(String, String)] = []
 
     static func == (a: GameSettings, b: GameSettings) -> Bool {
@@ -143,7 +143,7 @@ struct GameSettings: Equatable {
             case "D3DM_ENABLE_METALFX": s.metalFX = v == "1"
             case "D3DM_SUPPORT_DXR": s.raytracing = v == "1"
             case "TESSERA_STEAM_OVERLAY": s.steamOverlay = v != "0"
-            case "TESSERA_FULL_RESOLUTION": s.fullResolution = v == "1"
+            case "TESSERA_FULL_RESOLUTION": s.fullResolution = v != "0"
             default: s.extra.append((k, v))
             }
         }
@@ -157,7 +157,7 @@ struct GameSettings: Equatable {
         if metalFX { lines.append("D3DM_ENABLE_METALFX=1") }
         if raytracing { lines.append("D3DM_SUPPORT_DXR=1") }
         if !steamOverlay { lines.append("TESSERA_STEAM_OVERLAY=0") }
-        if fullResolution { lines.append("TESSERA_FULL_RESOLUTION=1") }
+        if !fullResolution { lines.append("TESSERA_FULL_RESOLUTION=0") }
         for (k, v) in extra where !k.isEmpty { lines.append("\(k)=\(v)") }
         try FileManager.default.createDirectory(at: Paths.gameSettings, withIntermediateDirectories: true)
         if lines.count == 1 {

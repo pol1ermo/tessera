@@ -184,7 +184,7 @@ struct GameView: View {
                 Toggle("Ray tracing (DirectX Raytracing, D3DMetal)", isOn: $settings.raytracing)
                     .disabled(settings.graphics == .dxmt || settings.graphics == .wined3d)
                 Toggle("Resolutions up to \(Self.screenSizes.full)", isOn: $settings.fullResolution)
-                Text("Off, games offer sizes up to the Mac desktop (\(Self.screenSizes.desktop)). On, the game's desktop is the screen's full \(Self.screenSizes.full), so its menu lists every size up to that: sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller.")
+                Text("On (the default), the game starts on the screen's full \(Self.screenSizes.full) and its menu lists every size up to that: sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller. Off, the game's desktop is the Mac desktop size (\(Self.screenSizes.desktop)) and games using D3DMetal offer sizes only up to that.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             SwiftUI.Section("Steam") {

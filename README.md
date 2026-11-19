@@ -4,7 +4,7 @@
 Free. One download. Nothing else to install.
 
 Tessera teaches the macOS Steam client to run Windows games: they show **Install** and **Play** in Steam like any Mac
-game, they keep Steam features (achievements, friends, cloud saves), and they draw through Apple's Metal graphics.
+game, they keep Steam features (achievements, friends), and they draw through Apple's Metal graphics.
 
 ## Download
 

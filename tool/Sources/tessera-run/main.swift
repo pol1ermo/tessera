@@ -157,8 +157,12 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
     // Automatic (no choice in the game's settings): D3DMetal, except for engines D3DMetal is known to trip up.
+    // Every game starts on a desktop as big as the screen's largest real mode (Tessera's Wine reads
+    // TESSERA_FULL_RESOLUTION), so the game opens at full resolution and its menu offers every size: D3DMetal's DXGI
+    // lists modes only up to the desktop. A game's settings can say TESSERA_FULL_RESOLUTION=0 for the Mac desktop size.
+    if env["TESSERA_FULL_RESOLUTION"] == nil { env["TESSERA_FULL_RESOLUTION"] = "1" }
     var graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
-    if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe) {
+    if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe, env: env) {
         graphics = "dxmt"
         log("\(engine) game: graphics through DXMT (automatic choice)")
     }
@@ -186,10 +190,26 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
 /// GameMaker's DirectX 11 runner asks for 8x and 16x anti-aliasing levels; D3DMetal answers "invalid argument"
 /// (Windows and DXMT answer "no quality levels") and the game shows an error box for each answer before it starts.
 /// GameMaker games keep their game data in data.win next to the program.
-func engineNeedingDXMT(exe: String) -> String? {
+/// BeamNG's engine gets its Direct3D 11 renderer from Tessera (see beamNGRendererArgs); DXMT runs that renderer
+/// faster than D3DMetal and lists every resolution the screen has.
+func engineNeedingDXMT(exe: String, env: [String: String]) -> String? {
     let dir = URL(fileURLWithPath: exe).deletingLastPathComponent()
     if FileManager.default.fileExists(atPath: dir.appendingPathComponent("data.win").path) { return "GameMaker" }
+    if !beamNGRendererArgs(exe: exe, env: env).isEmpty { return "BeamNG" }
     return nil
+}
+
+/// BeamNG's engine (BeamNG.drive, BeamNG.tech) starts its Direct3D 12 renderer by default. D3DMetal refuses the
+/// indirect-draw command signature that renderer builds for its GPU-driven drawing (CreateCommandSignature returns
+/// E_INVALIDARG); the engine asks again every frame and draws the scene without that geometry, and with GPU-driven
+/// drawing turned off the scene still comes out washed out. Its Direct3D 11 renderer draws correctly.
+/// Returns the arguments that pick it, unless the game's arguments already choose a renderer (-gfx) or the game's
+/// settings say TESSERA_ENGINE_SWITCHES=0.
+func beamNGRendererArgs(exe: String, env: [String: String]) -> [String] {
+    guard URL(fileURLWithPath: exe).lastPathComponent.lowercased().hasPrefix("beamng."),
+          env["TESSERA_ENGINE_SWITCHES"] != "0" else { return [] }
+    let given = Array(CommandLine.arguments.dropFirst(3)) + (env["TESSERA_GAME_ARGS"] ?? "").split(separator: " ").map(String.init)
+    return given.contains(where: { $0.lowercased() == "-gfx" }) ? [] : ["-gfx", "dx11"]
 }
 
 // MARK: - processes
@@ -522,8 +542,15 @@ if launchEnv["WINE_D3D_CONFIG"] == nil,
     launchEnv["WINE_D3D_CONFIG"] = "renderer=gl"
     log("Chromium-based game: WineD3D draws through OpenGL")
 }
-log("start   \(exePath) \(gameArgs.joined(separator: " "))")
-let status = runProcess(runtime.loader, ["start.exe", "/wait", "/unix", steamExe.path, windowsPath(forUnix: exePath)] + gameArgs,
+// Extra arguments from the game's Tessera settings (TESSERA_GAME_ARGS, separated by spaces) go after Steam's.
+var launchArgs = gameArgs + (env["TESSERA_GAME_ARGS"] ?? "").split(separator: " ").map(String.init)
+let rendererArgs = beamNGRendererArgs(exe: exePath, env: env)
+if !rendererArgs.isEmpty {
+    launchArgs += rendererArgs
+    log("BeamNG engine: Direct3D 11 renderer (\(rendererArgs.joined(separator: " ")))")
+}
+log("start   \(exePath) \(launchArgs.joined(separator: " "))")
+let status = runProcess(runtime.loader, ["start.exe", "/wait", "/unix", steamExe.path, windowsPath(forUnix: exePath)] + launchArgs,
                         env: launchEnv, cwd: gameDir)
 log("game exited with \(status)")
 if verb == "waitforexitandrun" {
