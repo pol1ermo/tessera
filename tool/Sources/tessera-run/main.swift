@@ -463,13 +463,14 @@ stageBackend(prefix, backendDir: env["TESSERA_BACKEND_DIR"])
 let steamCwd = FileManager.default.currentDirectoryPath
 let gameDir = steamCwd != "/" && FileManager.default.fileExists(atPath: steamCwd)
     ? URL(fileURLWithPath: steamCwd) : URL(fileURLWithPath: exePath).deletingLastPathComponent()
-// Steam's first-start scripts run Microsoft's installers. Older scripts give the Visual C++ installers no switches, so
-// they open their licence window and wait. Before Steam's script runner reads the script, the quiet switch is added
-// where the script has none (/q: tested with the 2005 SP1 package, accepted by the later ones too). DirectX's
-// DXSETUP is left alone: its /silent mode fails under Wine (it cannot verify the signatures of its .cab files).
+// Steam's first-start scripts run Microsoft's installers. Older scripts give them no switches, so the Visual C++
+// installer opens its licence window and DirectX's DXSETUP its setup wizard, and both wait for clicks. Before Steam's
+// script runner reads the script, the quiet switch is added where the script has none (/q for Visual C++: tested with
+// the 2005 SP1 package, accepted by the later ones too; /silent for DXSETUP: needs patch rule 4s).
 func quietInstallScript(_ script: URL) {
     guard var text = try? String(contentsOf: script, encoding: .utf8) else { return }
-    let quiet: [(suffix: String, args: String)] = [("vcredist_x86.exe", "/q"), ("vcredist_x64.exe", "/q")]
+    let quiet: [(suffix: String, args: String)] = [("vcredist_x86.exe", "/q"), ("vcredist_x64.exe", "/q"),
+                                                  ("dxsetup.exe", "/silent")]
     var lines = text.components(separatedBy: "\n")
     var i = 0, added = 0
     while i < lines.count {
