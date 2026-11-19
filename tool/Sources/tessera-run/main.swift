@@ -112,6 +112,10 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     // Rosetta reports AVX/AVX2 only when asked; many current games need them (some launchers silently pick a
     // fallback or quit without). A game's settings can turn it off with ROSETTA_ADVERTISE_AVX=0.
     env["ROSETTA_ADVERTISE_AVX"] = env["ROSETTA_ADVERTISE_AVX"] ?? "1"
+    // Vulkan games (MoltenVK): subgroup operations only in compute shaders. In a Metal fragment function an elected
+    // "first" thread can be a helper thread whose writes Metal drops - Godot 4's clustered lights then lose lights per
+    // screen tile (black squares in Buckshot Roulette). A game's settings can turn it back with ...=1.
+    env["MVK_CONFIG_FRAGMENT_SUBGROUPS"] = env["MVK_CONFIG_FRAGMENT_SUBGROUPS"] ?? "0"
     env["WINEDEBUG"] = env["WINEDEBUG"] ?? "-all"
     // GStreamer (winegstreamer: game videos and sound through Windows Media, Media Foundation, DirectShow) loads
     // only the runtime's own plugins - never a GStreamer installed on the Mac - and keeps its plugin index in
@@ -423,6 +427,12 @@ func stageSteam(_ prefix: URL) -> URL {
         let real = legacy.appendingPathComponent(name)
         if fm.fileExists(atPath: real.path) {
             stageFile(real, steamDir.appendingPathComponent(name))
+            // Steam's oldest DRM wrapper (2000s games: Hitman 2, Hitman: Codename 47) loads steam.dll by name only,
+            // which Windows finds in the system folder; Steam.dll is 32-bit, so it goes to the 32-bit one
+            let wow64 = prefix.appendingPathComponent("drive_c/windows/syswow64")
+            if name == "Steam.dll" && fm.fileExists(atPath: wow64.path) {
+                stageFile(real, wow64.appendingPathComponent("steam.dll"))
+            }
         } else if name != "Steam.dll" {
             // no legacycompat folder: the bridge itself stands in (games that check signatures will refuse it)
             let arch = name == "steamclient.dll" ? "i386-windows" : "x86_64-windows"

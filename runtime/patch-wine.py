@@ -165,6 +165,11 @@ exact("dlls/winemac.drv/cocoa_app.h", [('@property (readonly) BOOL clippingCurso
 # 4p. mouse look gets every mouse move from macOS (no coalescing): even view steps with a 1000 Hz mouse
 exact("dlls/winemac.drv/cocoa_app.m", [('            BOOL mouseLook = self.clippingCursor && clientWantsCursorHidden;\n            if (mouseLook)\n            {\n                lastSetCursorPositionTime = 0;\n                forceNextMouseMoveAbsolute = FALSE;\n            }', '            BOOL mouseLook = self.clippingCursor && clientWantsCursorHidden;\n            static BOOL mouseLookEventsUncoalesced;\n            if (mouseLook != mouseLookEventsUncoalesced)\n            {\n                // macOS merges mouse moves that arrive between two passes of the event loop; in mouse look the\n                // game gets each one (a 1000 Hz mouse moves the view in even steps instead of lumps)\n                [NSEvent setMouseCoalescingEnabled:!mouseLook];\n                mouseLookEventsUncoalesced = mouseLook;\n            }\n            if (mouseLook)\n            {\n                lastSetCursorPositionTime = 0;\n                forceNextMouseMoveAbsolute = FALSE;\n            }')])
 
+# 4q. games may change the display mode: Mac displays have no 640x480/800x600/16-bit modes, so Wine emulates the
+#     change (the game sees the mode, its window is scaled to the screen) - Wine's EmulateModeset, on by default
+#     (the value is only added when missing, so a game's own choice stays)
+exact("loader/wine.inf.in", [('[Misc]\nHKLM,Software\\Borland\\Database Engine\\Settings\\SYSTEM\\INIT,SHAREDMEMLOCATION,,9000', '[Misc]\nHKCU,Software\\Wine\\X11 Driver,"EmulateModeset",2,"y"\nHKLM,Software\\Borland\\Database Engine\\Settings\\SYSTEM\\INIT,SHAREDMEMLOCATION,,9000')])
+
 # 5. every remaining string literal: CX_* variables become TESSERA_*, CrossOver/CodeWeavers text becomes neutral
 SOURCE_DIRS = ["dlls", "programs", "loader", "server", "libs", "fonts", "nls"]
 SUFFIXES = {".c", ".m", ".h", ".rc", ".inf", ".in", ".idl", ".y", ".l", ".spec", ".reg"}

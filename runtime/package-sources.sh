@@ -57,12 +57,13 @@ mkdir -p "$STAGE/gstreamer"
 cp "$DL/gstreamer-mono-1.28.9.tar.gz" "$STAGE/gstreamer/gstreamer-1.28.9.tar.gz"
 cp "$GST"/subprojects/packagecache/* "$STAGE/gstreamer/"
 tar -C "$GST/subprojects" --exclude .git -czf "$STAGE/gstreamer/orc-0.4.42.tar.gz" orc
+cp "$DL/MoltenVK-1.4.2.tar.gz" "$STAGE/"
 
 echo "== Steam bridge"
 cp -pR "$HOME/.tessera/build/bridge/src" "$STAGE/steam-bridge/lsteamclient"
 cp -pR "$HERE/../bridge/steam-helper" "$STAGE/steam-bridge/steam-helper"
 
-cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
+cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-moltenvk.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
    "$HERE/../bridge/build-bridge.sh" "$HERE/../bridge/mac-adapt.py" "$STAGE/scripts/"
 cat > "$STAGE/README.txt" <<'EOF'
 Sources of the Windows runtime inside Tessera
@@ -77,6 +78,7 @@ Sources of the Windows runtime inside Tessera
   gstreamer/       GStreamer 1.28.9 (LGPL 2.1+) as released, plus the sources its build fetched: glib 2.86.3
                    (LGPL 2.1+), proxy-libintl 0.5 (LGPL 2.1+), libffi (MIT), pcre2 10.47 (BSD), orc 0.4.42 (BSD).
                    Built by scripts/build-gstreamer.sh.
+  MoltenVK-1.4.2.tar.gz  MoltenVK 1.4.2 as released (Apache 2.0); scripts/build-moltenvk.sh applies Tessera's change.
   steam-bridge/    lsteamclient from Valve's Proton, adapted for the macOS Steam client, and Tessera's steam.exe
 
 Build order (macOS on Apple silicon, Xcode, llvm-mingw for the Windows side): scripts/build-deps.sh,

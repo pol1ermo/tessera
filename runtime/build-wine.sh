@@ -14,7 +14,9 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
 SRC=$HOME/.tessera/build/sources/sources/wine
-MOLTENVK=${TESSERA_MOLTENVK:-$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/libMoltenVK.dylib}
+# MoltenVK: Tessera's own build (build-moltenvk.sh) when present
+MOLTENVK=${TESSERA_MOLTENVK:-$RT/deps/moltenvk/libMoltenVK.dylib}
+[ -f "$MOLTENVK" ] || MOLTENVK=$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/libMoltenVK.dylib
 JOBS=$(sysctl -n hw.ncpu)
 SDK=$(xcrun --show-sdk-path)
 export PATH="$HOME/.tessera/build/llvm-mingw-20261117-ucrt-macos-universal/bin:$HOME/.tessera/build/tools/bin:$PATH"
