@@ -148,6 +148,20 @@ struct GameView: View {
         _saved = State(initialValue: s)
     }
 
+    /// The main screen's desktop size and its largest mode, as Wine's display list names them (in points; the largest
+    /// is the panel's own resolution, macOS's "low resolution" 1:1 mode).
+    static let screenSizes: (desktop: String, full: String) = {
+        guard let screen = NSScreen.main,
+              let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+            return ("the desktop size", "the screen's full size")
+        }
+        let desktop = "\(Int(screen.frame.width)) × \(Int(screen.frame.height))"
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
+        guard let big = modes.max(by: { $0.width * $0.height < $1.width * $1.height }) else { return (desktop, desktop) }
+        return (desktop, "\(big.width) × \(big.height)")
+    }()
+
     var body: some View {
         Form {
             SwiftUI.Section {
@@ -169,6 +183,9 @@ struct GameView: View {
                 Toggle("Show the Metal performance overlay", isOn: $settings.showHUD)
                 Toggle("Ray tracing (DirectX Raytracing, D3DMetal)", isOn: $settings.raytracing)
                     .disabled(settings.graphics == .dxmt || settings.graphics == .wined3d)
+                Toggle("Resolutions up to \(Self.screenSizes.full)", isOn: $settings.fullResolution)
+                Text("Off, games offer sizes up to the Mac desktop (\(Self.screenSizes.desktop)). On, the game's desktop is the screen's full \(Self.screenSizes.full), so its menu lists every size up to that: sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             SwiftUI.Section("Steam") {
                 Toggle("Steam overlay (Shift+Tab)", isOn: $settings.steamOverlay)
