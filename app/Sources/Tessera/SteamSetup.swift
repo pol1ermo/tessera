@@ -93,9 +93,26 @@ enum SteamSetup {
         try replace(Paths.compatTool, with: Paths.bundledCompatTool)
         try? fm.removeItem(at: Paths.runtimeLink)
         try fm.createSymbolicLink(at: Paths.runtimeLink, withDestinationURL: Paths.bundledRuntime)
-        // A downloaded app arrives quarantined; Wine loads Apple's D3DMetal from the runtime for every game, and a
-        // quarantined copy would make macOS stop each one with a "cannot verify" prompt.
-        run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", Paths.bundledRuntime.path])
+        // A downloaded app arrives quarantined, and copies keep the flag. macOS stops a quarantined program or library
+        // that Steam starts or loads (the Steam library, the launcher, Wine and D3DMetal) with a "Not Opened" prompt,
+        // so the flag goes from the runtime and from the copies (the person already approved Tessera to open it).
+        run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", Paths.bundledRuntime.path,
+                               Paths.steamLibrary.deletingLastPathComponent().path, Paths.compatTool.path])
+    }
+
+    /// Runs when the app opens. After an update the app's files are new (and quarantined again when downloaded) while
+    /// Steam still uses the earlier copies, so the copies are refreshed when they differ and the flag is cleared.
+    static func syncAfterUpdate() {
+        guard steamEnvironment()[insertKey]?.contains(Paths.steamLibrary.path) == true,
+              (try? FileManager.default.destinationOfSymbolicLink(atPath: Paths.runtimeLink.path)) == Paths.bundledRuntime.path
+        else { return }
+        let fm = FileManager.default
+        let current = fm.contentsEqual(atPath: Paths.steamLibrary.path, andPath: Paths.bundledSteamLibrary.path)
+            && fm.contentsEqual(atPath: Paths.compatTool.appendingPathComponent("run").path,
+                                andPath: Paths.bundledCompatTool.appendingPathComponent("run").path)
+        if !current { try? installFiles() }
+        run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", Paths.bundledRuntime.path,
+                               Paths.steamLibrary.deletingLastPathComponent().path, Paths.compatTool.path])
     }
 
     private static func replace(_ dst: URL, with src: URL) throws {

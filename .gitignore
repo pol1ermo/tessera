@@ -7,3 +7,4 @@ __pycache__/
 .DS_Store
 docs/trello_board.txt
 docs/trello_plan.json
+perf/

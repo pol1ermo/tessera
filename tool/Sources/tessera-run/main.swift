@@ -113,10 +113,6 @@ func wineEnvironment(prefix: URL) -> [String: String] {
     // fallback or quit without). A game's settings can turn it off with ROSETTA_ADVERTISE_AVX=0.
     env["ROSETTA_ADVERTISE_AVX"] = env["ROSETTA_ADVERTISE_AVX"] ?? "1"
     env["WINEDEBUG"] = env["WINEDEBUG"] ?? "-all"
-    // no Mono/Gecko installer prompts; games that need .NET bring their own runtime
-    // winemenubuilder off: it would put shortcut apps into ~/Applications when games install
-    let overrides = ["mscoree,mshtml=d", "winemenubuilder.exe=d", "steam.exe=b", env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
-    env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // Per-game settings: ~/Library/Application Support/Tessera/games/<appid>.env, one NAME=value per line ("#" comments).
     let settings = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Tessera/games/\(appID).env")
@@ -128,6 +124,19 @@ func wineEnvironment(prefix: URL) -> [String: String] {
         }
         log("per-game settings from \(settings.lastPathComponent)")
     }
+    // no Mono/Gecko installer prompts; games that need .NET bring their own runtime
+    // winemenubuilder off: it would put shortcut apps into ~/Applications when games install
+    // Microsoft's C++ runtime: Steam installs it into the Windows folder on a game's first start (its redistributable
+    // step), as on Windows, and newer games accept only that version (Unreal 5's starter refused Wine's 14.42 copy:
+    // "Microsoft Visual C++ 2015-2022 Redistributable (x64) is required"). The installed files go first; without them
+    // Wine's own copies load.
+    // A game's own WINEDLLOVERRIDES (settings above) comes last, so it adds to these instead of replacing them.
+    let msvcRuntime = "msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,concrt140=n,b"
+    // winedbg off: a crashed game closes (Wine's crash debugger kept crashed programs open for good - Steam still showed
+    // them running); the log keeps Wine's "Unhandled page fault ..." line with the crash address.
+    let overrides = ["mscoree,mshtml=d", "winemenubuilder.exe=d", "winedbg.exe=d", "steam.exe=b", msvcRuntime,
+                     env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
+    env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
     let graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
     switch graphics {
@@ -361,6 +370,16 @@ log("prefix  \(prefix.path)")
 log("folder  \(gameDir.path)")
 var launchEnv = env
 launchEnv["TESSERA_WORKDIR"] = windowsPath(forUnix: gameDir.path)   // steam.exe starts the game there
+// Chromium-based games (NW.js, e.g. RPG Maker; CEF) draw through ANGLE's Direct3D 11. In 32-bit games that is
+// WineD3D, whose Vulkan path shows nothing for them (window stays empty); its OpenGL path draws. 64-bit games use
+// D3DMetal and do not read this. A game's own WINE_D3D_CONFIG wins.
+let exeDir = URL(fileURLWithPath: exePath).deletingLastPathComponent()
+if launchEnv["WINE_D3D_CONFIG"] == nil,
+   ["nw.dll", "libcef.dll"].contains(where: { name in
+       [exeDir, gameDir].contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent(name).path) } }) {
+    launchEnv["WINE_D3D_CONFIG"] = "renderer=gl"
+    log("Chromium-based game: WineD3D draws through OpenGL")
+}
 log("start   \(exePath) \(gameArgs.joined(separator: " "))")
 let status = runProcess(runtime.loader, ["start.exe", "/wait", "/unix", steamExe.path, windowsPath(forUnix: exePath)] + gameArgs,
                         env: launchEnv, cwd: gameDir)

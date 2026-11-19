@@ -30,7 +30,10 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var needsAppManagement = false
 
-    init() { refresh() }
+    init() {
+        refresh()
+        Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate() }
+    }
 
     func refresh() {
         state = SteamSetup.state()

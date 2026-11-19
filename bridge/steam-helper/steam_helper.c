@@ -98,6 +98,29 @@ static void mark_gaming_repair_done(void)
         set_dword(app, L"GamingRepair", 1);
         RegCloseKey(app);
     }
+    /* The Windows Steam client also marks the game it runs as installed and running under the user's key; Steam's
+     * DRM wrapper in older games checks it (Fallout: New Vegas: "Application load error 3:0000065432"). */
+    if (!RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &app, NULL))
+    {
+        set_dword(app, L"Installed", 1);
+        set_dword(app, L"Running", 1);
+        set_dword(app, L"Updating", 0);
+        RegCloseKey(app);
+    }
+}
+
+/* The Windows Steam client gives the games it starts two more variables. Some launchers check them before they
+   load any Steam library: CS:GO legacy (32-bit) stops with "Failed to connect with local Steam Client process"
+   when SteamPath is missing. ValvePlatformMutex is the Steam program's path with forward slashes. */
+static void set_steam_environment(void)
+{
+    WCHAR path[MAX_PATH];
+    SetEnvironmentVariableW(L"SteamPath", L"C:\\Program Files (x86)\\Steam");
+    if (GetModuleFileNameW(NULL, path, MAX_PATH))
+    {
+        for (WCHAR *p = path; *p; p++) if (*p == '\\') *p = '/';
+        SetEnvironmentVariableW(L"ValvePlatformMutex", path);
+    }
 }
 
 /* Everything after our own program name, exactly as it was quoted. */
@@ -142,6 +165,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, WCHAR *unused, int show)
     if (!*cmdline) return 0;
     announce_steam();
     mark_gaming_repair_done();
+    set_steam_environment();
     /* the game starts in the folder Steam chose for it (a game's install folder, or Steam's own folder for install
        scripts); Tessera's launcher passes it in TESSERA_WORKDIR because start.exe moves us into our own folder.
        Without it, the game's own folder is used. */

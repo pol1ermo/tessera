@@ -105,3 +105,51 @@ assert s.count(old) == 1, 'keysym #error not found'
 s = s.replace(old, mac, 1)
 open(p, 'w').write(s)
 print('mac-adapt: macOS key code table added')
+
+# Tessera loads every steamclient.dll a game asks for as this bridge (the loader redirects the name), so in a 32-bit
+# game GetModuleHandle("steamclient.dll") finds the bridge itself. Valve's code puts the game's interface objects
+# into that module's .data section, because Steam's DRM wrapper checks that they lie inside steamclient.dll
+# (Fallout: New Vegas stops with "Application load error 3:0000065432" otherwise). In the bridge's own .data they
+# overwrote its variables, and 32-bit games died in SteamAPI_Init (CS:GO legacy: "Failed to connect with local Steam
+# Client process"). The bridge now has a buffer of its own for them: inside its image, used by nothing else.
+p = src + '/steamclient_main.c'
+s = open(p).read()
+old = ('    if (!alloc_base)\n'
+       '    {\n'
+       '        static const WCHAR steamclientW[] = {\'s\',\'t\',\'e\',\'a\',\'m\',\'c\',\'l\',\'i\',\'e\',\'n\',\'t\',\'.\',\'d\',\'l\',\'l\',0};\n')
+new = ('    if (!alloc_base)\n'
+       '    {\n'
+       '        /* Tessera: the module named steamclient.dll is this bridge; its interfaces go to a buffer of its own */\n'
+       '        extern IMAGE_DOS_HEADER __ImageBase;\n'
+       '        static BYTE bridge_iface_mem[0x20000] __attribute__((section(".data"), aligned(16))) = { 1 };\n'
+       '        static const WCHAR nameW[] = {\'s\',\'t\',\'e\',\'a\',\'m\',\'c\',\'l\',\'i\',\'e\',\'n\',\'t\',\'.\',\'d\',\'l\',\'l\',0};\n'
+       '\n'
+       '        if (GetModuleHandleW(nameW) == (HMODULE)&__ImageBase)\n'
+       '        {\n'
+       '            alloc_start = alloc_base = bridge_iface_mem;\n'
+       '            alloc_end = bridge_iface_mem + sizeof(bridge_iface_mem);\n'
+       '            TRACE("Using the bridge\'s own buffer, start %p, end %p.\\n", alloc_base, alloc_end);\n'
+       '            *(unsigned int *)alloc_base = magic;\n'
+       '            alloc_base += sizeof(unsigned int);\n'
+       '        }\n'
+       '    }\n'
+       + old)
+assert s.count(old) == 1, 'steamclient.dll allocation block not found'
+s = s.replace(old, new, 1)
+open(p, 'w').write(s)
+print('mac-adapt: 32-bit interfaces in the bridge\'s own buffer')
+
+# Callbacks and API call results reached 32-bit games in the 64-bit layout: these five places hard-code "false" for
+# the wow64 flag (on Linux, 32-bit games use Steam's 32-bit library and never come here; on a Mac every 32-bit game
+# does). A 32-bit game then read pointers from padding, e.g. CS:GO crashed on the URL of its news panel.
+p = src + '/unixlib.cpp'
+s = open(p).read()
+for old in ('w_msg->m_cubParam = callback_len_utow( u_msg->m_iCallback, u_msg->m_cubParam, false );',
+            '                           w_msg->m_cubParam, false );',
+            'len = callback_len_utow( c->m_iCallback, c->m_cubParam, false );',
+            'alloc_callback_wtou( params->id, params->w_callback, &u_callback_len, false )',
+            'convert_callback_utow( params->id, u_callback, u_callback_len, params->w_callback, params->w_callback_len, false );'):
+    assert s.count(old) == 1, 'callback call not found: ' + old[:50]
+    s = s.replace(old, old.replace('false )', 'wow64 )'), 1)
+open(p, 'w').write(s)
+print('mac-adapt: callbacks converted for 32-bit games')
