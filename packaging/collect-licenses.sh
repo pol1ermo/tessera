@@ -38,6 +38,59 @@ cp "$P/LICENSE.proton"                "$DEST/Steam bridge - Proton license.txt"
 cp "$P/lsteamclient/LICENSE"          "$DEST/Steam bridge - Steamworks SDK.txt"
 
 # Apple's D3DMetal: the Game Porting Toolkit licence and acknowledgements, plus the notice inside the framework
+# The LGPL 3 (Nettle, GMP) is a set of extra permissions on top of the GPL 3, whose text has to come with it;
+# Wine Mono's SharpZipLib is GPL 2 with a linking exception.
+cp "$RT/deps-build/nettle-3.10/COPYINGv3" "$DEST/GNU GPL 3 (with the LGPL 3 of Nettle and GMP).txt"
+cp "$RT/deps-build/nettle-3.10/COPYINGv2" "$DEST/GNU GPL 2.txt"
+# Libraries in Wine's source tree (libs/) that Wine builds into its Windows DLLs, each with its own licence
+{
+    echo "Libraries that Wine carries in its source tree (libs/) and builds into its Windows DLLs, with their licences."
+    echo "This software is based in part on the work of the Independent JPEG Group (libjpeg)."
+    for entry in "capstone:LICENSE.TXT LICENSE_LLVM.TXT" "compiler-rt:LICENSE.TXT" "faudio:LICENSE" \
+                 "fluidsynth:COPYING.md" "gsm:COPYRIGHT" "jpeg:LICENSE" "jxr:LICENSE" "lcms2:COPYING" \
+                 "ldap:COPYRIGHT LICENSE" "mpg123:LICENSE" "musl:COPYRIGHT" "png:LICENSE" "tiff:COPYRIGHT" \
+                 "tomcrypt:LICENSE" "vkd3d:COPYING" "xml2:COPYING" "xslt:COPYING" "zlib:LICENSE"; do
+        lib=${entry%%:*}
+        for f in ${entry#*:}; do
+            printf '\n\n==================== %s (Wine libs/%s/%s) ====================\n\n' "$lib" "$lib" "$f"
+            cat "$S/wine/libs/$lib/$f"
+        done
+    done
+} > "$DEST/Wine - bundled libraries (libjpeg, libpng, libtiff, zlib and others).txt"
+# LLVM: DXMT links it into its shader converter (winemetal.so); DXVK's DLLs carry LLVM's C++ runtime
+cp "$HOME/.tessera/build/llvm-mingw-20261117-ucrt-macos-universal/LICENSE.TXT" "$DEST/LLVM - Apache 2.0 with LLVM exceptions.txt"
+# DXVK's DLLs are statically linked with the MinGW-w64 runtime, whose notices must come with the binaries
+[ -f "$L/MinGW-w64-runtime-COPYING.txt" ] || curl -fsSL -o "$L/MinGW-w64-runtime-COPYING.txt" \
+    https://raw.githubusercontent.com/mingw-w64/mingw-w64/master/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt
+cp "$L/MinGW-w64-runtime-COPYING.txt" "$DEST/MinGW-w64 runtime - licences.txt"
+# Built into MoltenVK (both builds)
+cp "$HOME/.tessera/build/moltenvk/MoltenVK-1.4.2/External/cereal/LICENSE" "$DEST/MoltenVK - cereal - BSD.txt"
+cp "$HOME/.tessera/build/moltenvk/MoltenVK-1.4.2/External/SPIRV-Cross/LICENSE" "$DEST/MoltenVK - SPIRV-Cross - Apache 2.0.txt"
+cp "$S/dxvk/include/openvr/LICENSE"   "$DEST/DXVK - OpenVR headers - BSD.txt"
+# Wine Mono's components: their licence files from the Wine Mono source archive (published next to each release)
+WM=$L/winemono/wine-mono-10.4.1
+WMFILES="COPYING mono/LICENSE mono/mcs/class/ICSharpCode.SharpZipLib/README mono/external/corefx/LICENSE.TXT
+         mono/external/corert/LICENSE.TXT mono/external/cecil/LICENSE.txt mono/external/aspnetwebstack/License.txt
+         mono/external/boringssl/LICENSE FNA/licenses/LICENSE FNA.NetStub/LICENSE FNA/lib/FAudio/LICENSE
+         FNA/lib/FNA3D/LICENSE FNA/lib/FNA3D/MojoShader/LICENSE.txt FNA/lib/SDL2-CS/LICENSE FNA/lib/SDL3-CS/LICENSE
+         FNA/lib/Theorafile/licenses/LICENSE SDL3/LICENSE.txt winforms/LICENSE.TXT
+         winforms-datavisualization/LICENSE.TXT wpf/LICENSE.TXT monoDX/LICENSE"
+if [ ! -f "$WM/mono/LICENSE" ]; then
+    mkdir -p "$L/winemono"
+    for f in $WMFILES; do echo "wine-mono-10.4.1/$f"; done > "$L/winemono/members.txt"
+    tar -xJf "$HOME/.tessera/build/downloads/winemono-src/wine-mono-10.4.1-src.tar.xz" -C "$L/winemono" -T "$L/winemono/members.txt"
+fi
+{
+    echo "Licences of the projects Wine Mono 10.4.1 is made of (from its source archive, wine-mono-10.4.1-src.tar.xz)."
+    echo "Its native parts: the Mono runtime, BoringSSL (libmono-btls-shared), SDL3, FAudio, FNA3D with MojoShader, FNAMF."
+    for f in $WMFILES; do
+        printf '\n\n==================== %s ====================\n\n' "$f"
+        cat "$WM/$f"
+    done
+} > "$DEST/Wine Mono - component licences.txt"
+# Wine's locale and Unicode tables are made from Unicode's data files
+[ -f "$L/Unicode-License-v3.txt" ] || curl -fsSL -o "$L/Unicode-License-v3.txt" https://www.unicode.org/license.txt
+cp "$L/Unicode-License-v3.txt" "$DEST/Unicode data - Unicode License v3.txt"
 if [ ! -f "$L/Apple GPTK License.txt" ]; then
     outer=$(hdiutil attach -nobrowse -readonly "$GPTK_DMG" | grep -o "/Volumes/.*" | head -1)
     inner=$(hdiutil attach -nobrowse -readonly "$outer"/Evaluation*.dmg | grep -o "/Volumes/.*" | head -1)
@@ -50,30 +103,40 @@ cp "$L/Apple GPTK Acknowledgements.txt" "$DEST/D3DMetal - Acknowledgements.txt"
 
 cat > "$DEST/README.txt" <<'EOF'
 Tessera - licences of the software it includes
-
 Tessera's own code: the app, its Steam integration and its game launcher.
-
+Everything below may be redistributed free of charge; D3DMetal only non-commercially (Tessera is free).
 Windows runtime (Contents/Resources/Runtime):
-
   Wine 11.0 ............ GNU LGPL 2.1 or later. Copyright the Wine project authors (see "Wine - authors.txt").
                          Tessera builds it from source with its own changes.
+    Libraries Wine builds into its DLLs: Capstone, compiler-rt, FAudio, FluidSynth, GSM 06.10, libjpeg, JPEG XR,
+    Little CMS, OpenLDAP, mpg123, musl, libpng, libtiff, LibTomCrypt, vkd3d, libxml2, libxslt, zlib - see
+    "Wine - bundled libraries". This software is based in part on the work of the Independent JPEG Group.
+    Wine's locale and Unicode tables are made from Unicode's data: Unicode License v3.
+  Wine Mono 10.4.1 ..... the .NET runtime Wine uses: MIT, LGPL, MS-PL, zlib, BSD/OpenSSL (BoringSSL) and GPL 2
+                         with a linking exception (SharpZipLib) - see the Wine Mono files.
   FreeType ............. FreeType License. Portions of this software are copyright (c) The FreeType Project
                          (www.freetype.org). All rights reserved.
   GnuTLS ............... GNU LGPL 2.1 or later.
-  Nettle, GMP .......... GNU LGPL 3 or later.
-  MoltenVK ............. Apache License 2.0.
-  FFmpeg ............... GNU LGPL 2.1 or later (built without its optional GPL parts).
-  GStreamer ............ GNU LGPL 2.1 or later (core, base, good, ugly, bad and libav plugins Wine uses).
+  Nettle, GMP .......... GNU LGPL 3 or later (with the GNU GPL 3 text it builds on).
+  MoltenVK ............. Apache License 2.0; contains SPIRV-Cross (Apache License 2.0) and cereal (BSD).
+  MoltenVK for DXVK .... Apache License 2.0 (same components).
+  DXVK 1.10.3 for macOS  zlib licence; OpenVR headers (BSD). Its DLLs contain the MinGW-w64 runtime and LLVM's
+                         C++ runtime (see "MinGW-w64 runtime" and "LLVM").
+  FFmpeg ............... GNU LGPL 2.1 or later (built without its optional GPL and non-free parts).
+  GStreamer ............ GNU LGPL 2.1 or later (core, base, good, ugly, bad and libav plugins Wine uses;
+                         the MPEG-PS demuxer is MPL 1.1 or LGPL, used under the LGPL).
   GLib, proxy-libintl .. GNU LGPL 2.1 or later.
   libffi ............... MIT License.   PCRE2 ......... BSD licence.   orc ............ BSD licence.
-  DXMT ................. MIT License. Copyright (c) 2023 Feifan He.
-  D3DMetal ............. Apple Game Porting Toolkit redistributables, included unmodified and distributed
-                         free of charge for non-commercial use under Apple's licence (see the D3DMetal files).
-  Steam bridge ......... built from the lsteamclient sources of Valve's Proton (see the Steam bridge files).
-
-Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib as built
-for this release,
-including Tessera's changes and build scripts, is published as a separate download next to each Tessera
-release. You may modify these libraries and use your modified versions with Tessera.
+  DXMT ................. MIT License. Copyright (c) 2023 Feifan He. Contains LLVM (Apache License 2.0 with LLVM
+                         exceptions).
+  D3DMetal ............. Apple Game Porting Toolkit redistributables (D3DMetal 3.0), included unmodified and
+                         distributed free of charge for non-commercial use under Apple's licence (section 2A(iii)
+                         and 2C; the text included is the one of the newest toolkit package, 4.0 beta 3).
+  Steam bridge ......... built from the lsteamclient sources of Valve's Proton (BSD licence) with the Steamworks
+                         SDK headers Valve publishes with it (see the Steam bridge files).
+Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer, GLib, DXVK and both
+MoltenVK builds as built for this release, including Tessera's changes and build scripts, is published as a
+separate download next to each Tessera release, with the source of Wine Mono. You may modify these libraries
+and use your modified versions with Tessera.
 EOF
 ls "$DEST" | wc -l | tr -d ' '

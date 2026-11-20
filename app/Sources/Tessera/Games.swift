@@ -208,7 +208,7 @@ struct GameSettings: Equatable {
         }
         var detail: String {
             switch self {
-            case .automatic: return "D3DMetal for most games; DXMT for GameMaker games, BeamNG and 32-bit DirectX 11 games (D3DMetal is 64-bit only); DXVK for Skyrim Special Edition."
+            case .automatic: return "D3DMetal for most games; DXMT for GameMaker games, BeamNG, Konami's Metal Gear collections and 32-bit DirectX 11 games (D3DMetal is 64-bit only); DXVK for Skyrim Special Edition."
             case .d3dmetal: return "Apple's DirectX 11/12 translation. Fastest for most games."
             case .dxmt: return "Open-source DirectX 11 translation to Metal. Try it if a DirectX 11 game misbehaves."
             case .dxvk: return "DirectX 9-11 translated to Vulkan (DXVK for macOS, on its own MoltenVK). For games that crash with D3DMetal and DXMT."

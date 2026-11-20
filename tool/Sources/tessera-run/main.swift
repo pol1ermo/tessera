@@ -231,9 +231,14 @@ func gameNeedingDXVK(exe: String, env: [String: String]) -> String? {
 /// 32-bit Direct3D 10/11 programs get DXMT too (see uses32BitDirect3D11).
 /// BeamNG's engine gets its Direct3D 11 renderer from Tessera (see beamNGRendererArgs); DXMT runs that renderer
 /// faster than D3DMetal and lists every resolution the screen has.
+/// Konami's engine of its Metal Gear collections (EngineSupport/stovk.bin next to the program and its launcher): every
+/// frame D3DMetal shows is black, DXMT draws it (METAL GEAR & METAL GEAR 2: Solid Snake).
 func engineNeedingDXMT(exe: String, env: [String: String]) -> String? {
     let dir = URL(fileURLWithPath: exe).deletingLastPathComponent()
     if FileManager.default.fileExists(atPath: dir.appendingPathComponent("data.win").path) { return "GameMaker" }
+    if FileManager.default.fileExists(atPath: dir.appendingPathComponent("EngineSupport/stovk.bin").path) {
+        return "Konami Metal Gear collection"
+    }
     if !beamNGRendererArgs(exe: exe, env: env).isEmpty { return "BeamNG" }
     if uses32BitDirect3D11(exe: exe) { return "32-bit Direct3D 11" }
     return nil
@@ -694,8 +699,54 @@ func stageSteam(_ prefix: URL) -> URL {
     return steamDir.appendingPathComponent("steam.exe")
 }
 
+/// Steam's cloud sync maps saves in a game's My Documents (and the older Application Data folders) to the Windows XP
+/// folder names inside the game's Windows folder, as for Proton, whose prefixes link those names to today's folders.
+/// Without the links Steam synced a "My Documents" folder the game never uses: saves in Documents were not uploaded,
+/// and downloaded ones landed beside the game's (Skyrim, Borderlands 2). Like Proton, at every start (Steam may put
+/// files there any time): merge what Steam put under the old name into the new folder - only folders the new one
+/// does not have, two copies of a save folder are never merged - keep the old one as "... BACKUP", link the name.
+func migrateUserPaths(_ prefix: URL) {
+    let fm = FileManager.default
+    let user = prefix.appendingPathComponent("drive_c/users/steamuser")
+    func merge(_ src: URL, _ dst: URL, root: Bool) {
+        if fm.fileExists(atPath: dst.path) && !root { return }
+        try? fm.createDirectory(at: dst, withIntermediateDirectories: true)
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        for item in (try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: keys)) ?? [] {
+            let target = dst.appendingPathComponent(item.lastPathComponent)
+            let v = try? item.resourceValues(forKeys: Set(keys))
+            if v?.isDirectory == true && v?.isSymbolicLink != true { merge(item, target, root: false) }
+            else if !fm.fileExists(atPath: target.path) { try? fm.copyItem(at: item, to: target) }
+        }
+    }
+    for (old, new, link) in [("Local Settings/Application Data", "AppData/Local", "../AppData/Local"),
+                             ("Application Data", "AppData/Roaming", "./AppData/Roaming"),
+                             ("My Documents", "Documents", "./Documents")] {
+        let oldURL = user.appendingPathComponent(old), newURL = user.appendingPathComponent(new)
+        guard fm.fileExists(atPath: newURL.path) else { continue }
+        switch (try? fm.attributesOfItem(atPath: oldURL.path))?[.type] as? FileAttributeType {
+        case .typeSymbolicLink?:
+            if (try? fm.destinationOfSymbolicLink(atPath: oldURL.path)) == link { continue }
+            try? fm.removeItem(at: oldURL)
+        case .typeDirectory?:
+            merge(oldURL, newURL, root: true)
+            var backup = oldURL.path + " BACKUP", n = 2
+            while fm.fileExists(atPath: backup) { backup = oldURL.path + " BACKUP \(n)"; n += 1 }
+            guard (try? fm.moveItem(atPath: oldURL.path, toPath: backup)) != nil else { continue }
+            log("Steam Cloud: \(old) now leads to \(new) (Steam's files merged, old folder kept as \"\(URL(fileURLWithPath: backup).lastPathComponent)\")")
+        case nil:
+            break
+        default:
+            continue                                   // a file of that name: leave it alone
+        }
+        try? fm.createDirectory(at: oldURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: oldURL.path, withDestinationPath: link)
+    }
+}
+
 let steamExe = stageSteam(prefix)
 stageBackend(prefix, backendDir: env["TESSERA_BACKEND_DIR"])
+migrateUserPaths(prefix)
 // Steam starts tools in the working folder the program expects (a game's install folder, or Steam's own folder for
 // install scripts, which name their files relative to it); only without one is the program's folder used.
 let steamCwd = FileManager.default.currentDirectoryPath
@@ -736,6 +787,15 @@ func quietInstallScript(_ script: URL) {
                 lines.insert("\(indent)\"command \(number)\"\t\t\"\(q.args)\"", at: i + 1)
                 added += 1
                 i += 1
+            } else if hasCommand, path.contains("vcredist"),
+                      lines[j].range(of: #""/q:a""#, options: [.regularExpression, .caseInsensitive]) != nil,
+                      let major = peFileVersionMajor(installerPath(path, gameDir: gameDir)), major >= 10 {
+                // "/q:a" is the quiet switch of the IExpress packages of Visual C++ 2005 and 2008; the installer of
+                // 2010 and later does not know it and opens its licence window (Borderlands 2's script)
+                lines[j] = lines[j].replacingOccurrences(of: #""/q:a""#, with: "\"/q /norestart\"",
+                                                         options: [.regularExpression, .caseInsensitive])
+                log("install script: \(URL(fileURLWithPath: installerPath(path, gameDir: gameDir)).lastPathComponent) is Visual C++ \(major).x: /q:a -> /q /norestart")
+                added += 1
             }
         }
         i += 1
@@ -746,6 +806,39 @@ func quietInstallScript(_ script: URL) {
         log("install script: silent switches added for \(added) installer(s)")
     }
 }
+/// The Mac path of an installer an install script names: %INSTALLDIR% is the game's folder (Steam passes it as
+/// STEAM_COMPAT_INSTALL_PATH), Z: is the Mac's root and C: the game's Windows folder.
+func installerPath(_ scriptPath: String, gameDir: URL) -> String {
+    var p = scriptPath.replacingOccurrences(of: "\\\\", with: "/").replacingOccurrences(of: "\\", with: "/")
+    let installDir = steamEnv["STEAM_COMPAT_INSTALL_PATH"].flatMap { $0.isEmpty ? nil : $0 } ?? gameDir.path
+    if let r = p.range(of: "%installdir%", options: .caseInsensitive) {
+        p.replaceSubrange(r, with: installDir)
+    } else if p.lowercased().hasPrefix("z:/") {
+        p = String(p.dropFirst(2))
+    } else if p.lowercased().hasPrefix("c:/") {
+        p = prefix.appendingPathComponent("drive_c").path + "/" + p.dropFirst(3)
+    }
+    return p
+}
+
+/// The major file version of a Windows program (its version resource's VS_FIXEDFILEINFO), or nil. Installers carry
+/// their payload after their own resources, so the first such block is the program's own.
+func peFileVersionMajor(_ path: String) -> Int? {
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int? in
+        let b = raw.bindMemory(to: UInt8.self)
+        var i = 0
+        while i + 12 <= b.count {
+            if b[i] == 0xBD, b[i + 1] == 0x04, b[i + 2] == 0xEF, b[i + 3] == 0xFE {
+                // dwSignature, dwStrucVersion, dwFileVersionMS = major << 16 | minor
+                return Int(b[i + 10]) | Int(b[i + 11]) << 8
+            }
+            i += 1
+        }
+        return nil
+    }
+}
+
 if URL(fileURLWithPath: exePath).lastPathComponent.lowercased() == "iscriptevaluator.exe",
    let arg = gameArgs.first(where: { $0.lowercased().hasSuffix(".vdf") }) {
     quietInstallScript(gameDir.appendingPathComponent(arg.replacingOccurrences(of: "\\", with: "/")))

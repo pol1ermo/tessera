@@ -25,7 +25,9 @@ Requirements: a Mac with Apple silicon (M1 or newer), macOS 14 Sonoma or later, 
 
 ## Licences
 
-Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib are LGPL — their exact sources with Tessera's
-changes are attached to every release (`tessera-runtime-src-*.tar.xz`). D3DMetal is Apple's Game Porting Toolkit redistributable,
-included unmodified and distributed free of charge (non-commercial). DXMT is MIT, MoltenVK Apache 2.0, the Steam
-bridge comes from Valve's Proton. All licence texts are inside the app: `Tessera.app/Contents/Resources/Licenses`.
+Tessera bundles D3DMetal (Apple's Game Porting Toolkit redistributables, included unmodified and distributed free
+of charge, non-commercial only), Wine, Wine Mono, DXMT, DXVK, MoltenVK, FreeType, GnuTLS, Nettle, GMP, FFmpeg,
+GStreamer, GLib and Valve's Steam bridge code. [LICENSES.md](LICENSES.md) lists every component with its licence;
+the texts are in [`licenses/`](licenses/), inside the app (`Tessera.app/Contents/Resources/Licenses`) and in
+`Tessera-licences.zip` next to every release. The LGPL libraries' exact sources with Tessera's changes are attached
+to every release (`tessera-runtime-src-*.tar.xz`).
