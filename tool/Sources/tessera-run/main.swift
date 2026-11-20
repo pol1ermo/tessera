@@ -142,7 +142,8 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
         }
         log("per-game settings from \(settings.lastPathComponent)")
     }
-    // no Mono/Gecko installer prompts; games that need .NET bring their own runtime
+    // .NET Framework programs (launchers, tools) run on Wine Mono, which the runtime carries (share/wine/mono), so
+    // Wine never asks to download it; no Gecko (Internet Explorer engine) installer prompts
     // winemenubuilder off: it would put shortcut apps into ~/Applications when games install
     // Microsoft's C++ runtime: Steam installs it into the Windows folder on a game's first start (its redistributable
     // step), as on Windows, and newer games accept only that version (Unreal 5's starter refused Wine's 14.42 copy:
@@ -152,23 +153,50 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     let msvcRuntime = "msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,concrt140=n,b"
     // winedbg off: a crashed game closes (Wine's crash debugger kept crashed programs open for good - Steam still showed
     // them running); the log keeps Wine's "Unhandled page fault ..." line with the crash address.
-    let overrides = ["mscoree,mshtml=d", "winemenubuilder.exe=d", "winedbg.exe=d", "steam.exe=b", msvcRuntime,
+    let overrides = ["mshtml=d", "winemenubuilder.exe=d", "winedbg.exe=d", "steam.exe=b", msvcRuntime,
                      env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
     env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
     // Automatic (no choice in the game's settings): D3DMetal, except for engines D3DMetal is known to trip up.
-    // Every game starts on a desktop as big as the screen's largest real mode (Tessera's Wine reads
-    // TESSERA_FULL_RESOLUTION), so the game opens at full resolution and its menu offers every size: D3DMetal's DXGI
-    // lists modes only up to the desktop. A game's settings can say TESSERA_FULL_RESOLUTION=0 for the Mac desktop size.
-    if env["TESSERA_FULL_RESOLUTION"] == nil { env["TESSERA_FULL_RESOLUTION"] = "1" }
     var graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
-    if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe, env: env) {
+    if env["TESSERA_GRAPHICS"] == nil, let game = gameNeedingDXVK(exe: exe, env: env) {
+        graphics = "dxvk"
+        log("\(game): graphics through DXVK (automatic choice)")
+    } else if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe, env: env) {
         graphics = "dxmt"
         log("\(engine) game: graphics through DXMT (automatic choice)")
+    }
+    // A game drawing through D3DMetal starts on a desktop as big as the screen's largest real mode (Tessera's Wine
+    // reads TESSERA_FULL_RESOLUTION): Apple's DXGI lists display modes only up to the desktop size, so the game opens
+    // at full resolution and its menu offers every size. DXMT, WineD3D, Vulkan and OpenGL list every mode on the Mac
+    // desktop size, and Chromium-based games draw magnified on a larger emulated desktop (OpenGL itself is scaled
+    // correctly), so those keep the Mac size, as do 32-bit programs (D3DMetal is 64-bit only) and programs that link only
+    // Direct3D 9, OpenGL or Vulkan; a 32-bit or .NET launcher whose game folder holds a 64-bit DXGI program gets the
+    // full size for that game. A game's settings can say TESSERA_FULL_RESOLUTION=0 or 1.
+    // Steam's own helpers (the install-script runner before each start) use the game's choice, remembered in its
+    // Windows folder, so the game does not inherit a desktop size chosen for a helper.
+    if env["TESSERA_FULL_RESOLUTION"] == nil {
+        let gameChoice = prefix.appendingPathComponent(".tessera-desktop-game")
+        let full: Bool
+        if isSteamHelper(exe) {
+            full = (try? String(contentsOf: gameChoice, encoding: .utf8)) == "full"
+        } else {
+            full = graphics == "d3dmetal" && !isChromiumBased(exe: exe)
+                && (mayUseDXGI(exe: exe) || startsDXGIProgram(exe: exe))
+            // (a game's first program may run before its Windows folder exists)
+            try? FileManager.default.createDirectory(at: prefix, withIntermediateDirectories: true)
+            try? (full ? "full" : "mac").write(to: gameChoice, atomically: true, encoding: .utf8)
+        }
+        env["TESSERA_FULL_RESOLUTION"] = full ? "1" : "0"
     }
     switch graphics {
     case "dxmt": env["TESSERA_BACKEND_DIR"] = "\(root)/lib/dxmt"
     case "wined3d": env["TESSERA_BACKEND_DIR"] = "\(root)/lib/wined3d"
+    case "dxvk":
+        // CodeWeavers' DXVK, with the MoltenVK it is made for: Wine loads the Vulkan library this variable names
+        // (patch-wine.py 4x); DYLD_LIBRARY_PATH cannot do it, macOS ignores it for Wine's signed loader
+        env["TESSERA_BACKEND_DIR"] = "\(root)/lib/dxvk"
+        env["TESSERA_LIBVULKAN"] = "\(root)/lib64/dxvk/libMoltenVK.dylib"
     default: env.removeValue(forKey: "TESSERA_BACKEND_DIR")
     }
     env["TESSERA_ACTIVE_GRAPHICS_BACKEND"] = graphics
@@ -187,16 +215,162 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     return env
 }
 
+/// The Elder Scrolls V: Skyrim Special Edition crashes in its own code under both Metal translations of Direct3D 11
+/// (D3DMetal and DXMT: an access violation about 12 s in, at the intro video and again at New Game; CrossOver users see
+/// the same with D3DMetal) and runs on DXVK. Steam starts its launcher, whose game process inherits the choice. The
+/// game's settings can turn this off with TESSERA_ENGINE_SWITCHES=0.
+func gameNeedingDXVK(exe: String, env: [String: String]) -> String? {
+    guard env["TESSERA_ENGINE_SWITCHES"] != "0" else { return nil }
+    let name = URL(fileURLWithPath: exe).lastPathComponent.lowercased()
+    return ["skyrimse.exe", "skyrimselauncher.exe"].contains(name) ? "Skyrim Special Edition" : nil
+}
+
 /// GameMaker's DirectX 11 runner asks for 8x and 16x anti-aliasing levels; D3DMetal answers "invalid argument"
 /// (Windows and DXMT answer "no quality levels") and the game shows an error box for each answer before it starts.
 /// GameMaker games keep their game data in data.win next to the program.
+/// 32-bit Direct3D 10/11 programs get DXMT too (see uses32BitDirect3D11).
 /// BeamNG's engine gets its Direct3D 11 renderer from Tessera (see beamNGRendererArgs); DXMT runs that renderer
 /// faster than D3DMetal and lists every resolution the screen has.
 func engineNeedingDXMT(exe: String, env: [String: String]) -> String? {
     let dir = URL(fileURLWithPath: exe).deletingLastPathComponent()
     if FileManager.default.fileExists(atPath: dir.appendingPathComponent("data.win").path) { return "GameMaker" }
     if !beamNGRendererArgs(exe: exe, env: env).isEmpty { return "BeamNG" }
+    if uses32BitDirect3D11(exe: exe) { return "32-bit Direct3D 11" }
     return nil
+}
+
+/// D3DMetal is 64-bit only, so a 32-bit program's Direct3D 10/11 would fall back to Wine's own, which cannot create a
+/// device on macOS's OpenGL (Unity: "Failed to initialize graphics"); DXMT has a 32-bit build. True for 32-bit
+/// programs that link or delay-load Direct3D 10/11 and for 32-bit Unity games (Unity 5 and later draw through
+/// Direct3D 11; Unity 4's Direct3D 9 keeps Wine's own, as DXMT has no Direct3D 9). .NET launchers are left alone.
+func uses32BitDirect3D11(exe: String) -> Bool {
+    guard let main = peImports(exe), !main.is64, !main.dotNet else { return false }
+    let d3d11: Set<String> = ["d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll"]
+    return !main.dlls.union(main.delayed).isDisjoint(with: d3d11) || isUnityGame(exe: exe)
+}
+
+/// Programs Steam runs from its own folder in a game's Windows folder (the install-script runner, the Steam service).
+func isSteamHelper(_ exe: String) -> Bool {
+    let name = URL(fileURLWithPath: exe).lastPathComponent.lowercased()
+    return exe.contains("/Steam.AppBundle/") || name == "iscriptevaluator.exe" || name == "steamservice.exe"
+}
+
+/// What a Windows program links: whether it is 64-bit, whether it is a .NET program (its code is then not in the
+/// import table), the DLLs it links and those it delay-loads (loaded on first use; engines list optional renderers
+/// there); nil when it is not a PE file. Reads only the headers and those tables.
+func peImports(_ path: String) -> (is64: Bool, dotNet: Bool, dlls: Set<String>, delayed: Set<String>)? {
+    guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+    defer { try? h.close() }
+    func read(_ offset: Int, _ count: Int) -> [UInt8] {
+        guard offset >= 0, (try? h.seek(toOffset: UInt64(offset))) != nil,
+              let d = try? h.read(upToCount: count) else { return [] }
+        return [UInt8](d)
+    }
+    func u16(_ b: [UInt8], _ o: Int) -> Int { o >= 0 && o + 2 <= b.count ? Int(b[o]) | Int(b[o + 1]) << 8 : 0 }
+    func u32(_ b: [UInt8], _ o: Int) -> Int { u16(b, o) | u16(b, o + 2) << 16 }
+    let head = read(0, 64 << 10)                    // DOS and PE headers with the section table
+    guard head.count > 0x40, head[0] == 0x4d, head[1] == 0x5a else { return nil }
+    let pe = u32(head, 0x3c)
+    guard u32(head, pe) == 0x4550 else { return nil }
+    let sections = min(u16(head, pe + 6), 96), optSize = u16(head, pe + 20), opt = pe + 24
+    let is64 = u16(head, opt) == 0x20b
+    let dirCount = u32(head, opt + (is64 ? 108 : 92)), dirs = opt + (is64 ? 112 : 96)
+    func directory(_ i: Int) -> Int { i < dirCount ? u32(head, dirs + i * 8) : 0 }   // 1 imports, 13 delay-load, 14 .NET
+    func offset(_ rva: Int) -> Int? {
+        for i in 0..<sections {
+            let sh = opt + optSize + i * 40
+            let va = u32(head, sh + 12), size = max(u32(head, sh + 8), u32(head, sh + 16)), raw = u32(head, sh + 20)
+            if rva >= va && rva < va + size { return rva - va + raw }
+        }
+        return nil
+    }
+    func names(_ index: Int, entrySize: Int, nameAt: Int) -> Set<String> {
+        var dlls = Set<String>()
+        let rva = directory(index)
+        guard rva != 0, let start = offset(rva) else { return dlls }
+        let table = read(start, entrySize * 256)
+        var d = 0
+        while d + entrySize <= table.count, u32(table, d + nameAt) != 0 {
+            if let n = offset(u32(table, d + nameAt)) {
+                let raw = read(n, 128)
+                let end = raw.firstIndex(of: 0) ?? raw.count
+                dlls.insert(String(decoding: raw[..<end], as: UTF8.self).lowercased())
+            }
+            d += entrySize
+        }
+        return dlls
+    }
+    return (is64, directory(14) != 0, names(1, entrySize: 20, nameAt: 12), names(13, entrySize: 32, nameAt: 4))
+}
+
+/// The DLLs of DXGI and Direct3D 10-12.
+let dxgiDLLs: Set<String> = ["dxgi.dll", "d3d10.dll", "d3d10_1.dll", "d3d11.dll", "d3d12.dll"]
+
+/// Unity games keep their player in UnityPlayer.dll (Unity 2017.2 and later) or their data in <program>_Data. Unity's
+/// Windows default renderer is Direct3D 11, which the player loads at run time (it links only its optional OpenGL one).
+func isUnityGame(exe: String) -> Bool {
+    let url = URL(fileURLWithPath: exe), dir = url.deletingLastPathComponent(), fm = FileManager.default
+    return fm.fileExists(atPath: dir.appendingPathComponent("UnityPlayer.dll").path)
+        || fm.fileExists(atPath: dir.appendingPathComponent(url.deletingPathExtension().lastPathComponent + "_Data").path)
+}
+
+/// Whether a game may draw through DXGI (Direct3D 10-12), the only path whose resolution list stops at the desktop.
+/// Yes for Unity games and programs that link or delay-load DXGI or Direct3D 10-12. No for 32-bit programs (D3DMetal
+/// is 64-bit only), for programs that link Direct3D 8/9 or OpenGL, and for Vulkan programs: those list every mode on
+/// the Mac desktop. Otherwise yes: engines that load their renderer later (an Unreal start program) may pick
+/// Direct3D 12.
+func mayUseDXGI(exe: String) -> Bool {
+    guard let main = peImports(exe) else { return true }
+    if !main.is64 { return false }
+    if isUnityGame(exe: exe) { return true }
+    let all = main.dlls.union(main.delayed)
+    if !all.isDisjoint(with: dxgiDLLs) { return true }
+    return main.dlls.isDisjoint(with: ["d3d9.dll", "d3d8.dll", "opengl32.dll"]) && !all.contains("vulkan-1.dll")
+}
+
+/// The Steam game folder a program belongs to (<library>/steamapps/common/<game>), else the program's own folder.
+func gameFolder(of exe: String) -> URL {
+    let url = URL(fileURLWithPath: exe)
+    let parts = url.pathComponents
+    if let i = parts.lastIndex(where: { $0.lowercased() == "common" }), i > 0,
+       parts[i - 1].lowercased() == "steamapps", i + 2 < parts.count {
+        return URL(fileURLWithPath: NSString.path(withComponents: Array(parts[...(i + 1)])))
+    }
+    return url.deletingLastPathComponent()
+}
+
+/// A 32-bit or .NET program (often a game's launcher) starts a game that needs the full-resolution desktop when its
+/// game folder holds a 64-bit Unity game or a 64-bit program linking or delay-loading DXGI or Direct3D 10-12.
+/// Installers, redistributables and crash reporters are skipped.
+func startsDXGIProgram(exe: String) -> Bool {
+    guard let main = peImports(exe), !main.is64 || main.dotNet else { return false }
+    let skip = ["redist", "vcredist", "vc_redist", "directx", "dxsetup", "dotnet", "ndp4", "oalinst", "physx", "prereq",
+                "setup", "unins", "install", "crashhandler", "crashreport", "easyanticheat", "battleye"]
+    guard let walker = FileManager.default.enumerator(at: gameFolder(of: exe), includingPropertiesForKeys: [.isDirectoryKey],
+                                                      options: [.skipsHiddenFiles]) else { return false }
+    var checked = 0
+    for case let url as URL in walker {
+        let name = url.lastPathComponent.lowercased()
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            if walker.level >= 4 || skip.contains(where: { name.contains($0) }) { walker.skipDescendants() }
+            continue
+        }
+        guard name.hasSuffix(".exe"), !skip.contains(where: { name.contains($0) }), url.path != exe else { continue }
+        checked += 1
+        if checked > 64 { break }
+        guard let program = peImports(url.path), program.is64 else { continue }
+        if isUnityGame(exe: url.path) || !program.dlls.union(program.delayed).isDisjoint(with: dxgiDLLs) { return true }
+    }
+    return false
+}
+
+/// Chromium-based games (NW.js, e.g. RPG Maker MV/MZ; CEF) ship nw.dll or libcef.dll next to the program or one
+/// folder up. On a desktop larger than the screen they draw their page magnified and cut off (about 1.7x, the
+/// desktop's scale), while plain OpenGL, Vulkan and Metal windows are scaled correctly.
+func isChromiumBased(exe: String) -> Bool {
+    let dir = URL(fileURLWithPath: exe).deletingLastPathComponent()
+    return ["nw.dll", "libcef.dll"].contains { name in
+        [dir, dir.deletingLastPathComponent()].contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent(name).path) } }
 }
 
 /// BeamNG's engine (BeamNG.drive, BeamNG.tech) starts its Direct3D 12 renderer by default. D3DMetal refuses the
@@ -228,6 +402,33 @@ func runProcess(_ exe: URL, _ args: [String], env: [String: String], cwd: URL? =
     return wait ? p.terminationStatus : 0
 }
 
+/// Wine runs Intel code through Apple's Rosetta 2. Apple-silicon Macs do not have it until something asks for it, and
+/// Steam runs natively, so a Mac can have Steam and Tessera without Rosetta: then every Windows program fails to start
+/// ("Bad CPU type"), whatever the graphics. When it is missing, Tessera asks and installs it with Apple's
+/// softwareupdate (no administrator password needed). TESSERA_TEST_NO_ROSETTA=1 pretends it is missing (testing).
+func rosettaInstalled() -> Bool {
+    ProcessInfo.processInfo.environment["TESSERA_TEST_NO_ROSETTA"] != "1"
+        && FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah/libRosettaRuntime")
+}
+
+func ensureRosetta() {
+    guard !rosettaInstalled() else { return }
+    log("Rosetta 2 is not installed: Windows programs run through it")
+    let ask = Process()
+    ask.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    ask.arguments = ["-e", "display dialog \"Windows games need Apple's Rosetta 2, which is not installed on this Mac yet. Install it now? (About a minute; by installing you agree to Apple's licence for Rosetta.)\" buttons {\"Not Now\", \"Install Rosetta\"} default button 2 with title \"Tessera\" with icon caution"]
+    let pipe = Pipe(); ask.standardOutput = pipe; ask.standardError = pipe
+    try? ask.run(); ask.waitUntilExit()
+    let answer = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    guard answer.contains("Install Rosetta") else { fail("Rosetta 2 is not installed; the game cannot start without it") }
+    log("installing Rosetta 2")
+    let status = runProcess(URL(fileURLWithPath: "/usr/sbin/softwareupdate"), ["--install-rosetta", "--agree-to-license"], env: ProcessInfo.processInfo.environment)
+    guard status == 0, FileManager.default.fileExists(atPath: "/Library/Apple/usr/libexec/oah/libRosettaRuntime") else {
+        fail("installing Rosetta 2 failed (softwareupdate exit \(status))")
+    }
+    log("Rosetta 2 installed")
+}
+
 func killPrefix(_ env: [String: String]) {
     runProcess(runtime.server, ["-k"], env: env)
 }
@@ -255,14 +456,17 @@ func stableHash(_ text: String) -> String {
     return String(h, radix: 16)
 }
 
-/// The template for this runtime, named after the runtime's place and its wine.inf (Wine compares that file to tell
-/// whether a Windows folder is current); built on first use, earlier runtimes' templates are removed.
+/// The template for this runtime, named after the runtime's place, its wine.inf (Wine compares that file to tell
+/// whether a Windows folder is current) and its Wine Mono; built on first use, earlier runtimes' templates are removed.
 func prefixTemplate(env: [String: String]) -> URL? {
     let fm = FileManager.default
     let inf = runtime.root.appendingPathComponent("share/wine/wine.inf")
     guard let attrs = try? fm.attributesOfItem(atPath: inf.path),
           let changed = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 else { return nil }
-    let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)")
+    // Wine Mono in the runtime (share/wine/mono) changes what Wine's set-up installs (.NET support), so it is part of it
+    let mono = ((try? fm.contentsOfDirectory(atPath: runtime.root.appendingPathComponent("share/wine/mono").path)) ?? [])
+        .sorted().joined(separator: ",")
+    let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)|\(mono)")
     let template = templatesDir.appendingPathComponent(key)
     let ready = { fm.fileExists(atPath: template.appendingPathComponent("system.reg").path) }
     if ready() { return template }
@@ -344,9 +548,23 @@ default:
 
 guard let exePath = args.first else { fail("no program to run") }
 let gameArgs = Array(args.dropFirst())
+ensureRosetta()
 let prefix = prefixURL()
 let env = wineEnvironment(prefix: prefix, exe: exePath)
+// A Wine session still running in this Windows folder keeps its desktop size. Steam's install-script runner ends a
+// moment before the game starts; when the game needs the other size, that lingering session is ended first. A
+// session of a game itself is never ended (a second program shares its desktop).
+let desktopMarker = prefix.appendingPathComponent(".tessera-desktop")
+let desktopSize = env["TESSERA_FULL_RESOLUTION"] == "1" ? "full" : "mac"
+if let previous = try? String(contentsOf: desktopMarker, encoding: .utf8) {
+    let parts = previous.split(separator: " ").map(String.init)
+    if parts.first != desktopSize && parts.count > 1 && parts[1] == "helper" {
+        killPrefix(env)
+        log("desktop size \(parts[0]) -> \(desktopSize): ended the lingering Wine session of Steam's helper first")
+    }
+}
 ensurePrefix(prefix, env: env)
+try? (desktopSize + (isSteamHelper(exePath) ? " helper" : "")).write(to: desktopMarker, atomically: true, encoding: .utf8)
 
 // Steam's Stop button and quitting Steam end this process; take the game's processes down with it.
 var signalSources: [DispatchSourceSignal] = []
@@ -489,8 +707,15 @@ let gameDir = steamCwd != "/" && FileManager.default.fileExists(atPath: steamCwd
 // the 2005 SP1 package, accepted by the later ones too; /silent for DXSETUP: needs patch rule 4s).
 func quietInstallScript(_ script: URL) {
     guard var text = try? String(contentsOf: script, encoding: .utf8) else { return }
-    let quiet: [(suffix: String, args: String)] = [("vcredist_x86.exe", "/q"), ("vcredist_x64.exe", "/q"),
-                                                  ("dxsetup.exe", "/silent")]
+    // Visual C++ 2005-2013 ("vcredist_x86/x64.exe"), Visual C++ 2015-2022 ("VC_redist.x86/x64.exe"), DirectX setup,
+    // OpenAL and the legacy PhysX system software, each with its own quiet switch.
+    let quiet: [(matches: (String) -> Bool, args: String)] = [
+        ({ $0.hasSuffix("vcredist_x86.exe") || $0.hasSuffix("vcredist_x64.exe") }, "/q"),
+        ({ $0.hasSuffix("vc_redist.x86.exe") || $0.hasSuffix("vc_redist.x64.exe") }, "/install /quiet /norestart"),
+        ({ $0.hasSuffix("dxsetup.exe") }, "/silent"),
+        ({ $0.hasSuffix("oalinst.exe") }, "/s"),
+        ({ $0.contains("physx") && $0.hasSuffix(".exe") }, "/quiet"),
+    ]
     var lines = text.components(separatedBy: "\n")
     var i = 0, added = 0
     while i < lines.count {
@@ -507,7 +732,7 @@ func quietInstallScript(_ script: URL) {
                 if lines[j].contains("\"command \(number)\"") { hasCommand = true; break }
                 j += 1
             }
-            if !hasCommand, let q = quiet.first(where: { path.hasSuffix($0.suffix) }) {
+            if !hasCommand, let q = quiet.first(where: { $0.matches(path) }) {
                 lines.insert("\(indent)\"command \(number)\"\t\t\"\(q.args)\"", at: i + 1)
                 added += 1
                 i += 1

@@ -223,6 +223,63 @@ brand = [
     (re.compile(r"\bcrossover\b"), "tessera"),
 ]
 keep = re.compile(r"copyright|\(c\)|©|codeweavers\.com/compatibility|license", re.I)
+# 4v. Vulkan swapchains whose size differs from the window's layer on screen: an emulated desktop or display mode larger
+#     than the screen (Tessera's full-resolution desktop, resolutions above the desktop) or DPI scaling. MoltenVK then
+#     calls every present "suboptimal" and games recreate the swapchain endlessly (black window). Wine's cure, swapchains
+#     created as deliberately scaled (VkSwapchainPresentScalingCreateInfo), never applied: the host's
+#     VK_EXT_surface_maintenance1 was enabled only if the app's win32_surface flag was set, checked one line after that
+#     flag is cleared. Enabled before it is cleared; every swapchain is created deliberately scaled when the host supports
+#     it (keeping the app's own pNext chain, and not when the app sets its own scaling). Whether a swapchain still fits
+#     its window stays Wine's own check at acquire and present.
+exact("dlls/win32u/vulkan.c", [
+    ("    driver_funcs->p_map_instance_extensions( &instance->obj.extensions );\n"
+     "    instance->obj.extensions.has_VK_KHR_win32_surface = 0;\n",
+     "    driver_funcs->p_map_instance_extensions( &instance->obj.extensions );\n"
+     "    /* Tessera: decide on the host's surface_maintenance1 while the app's win32_surface request is still known\n"
+     "     * (it is cleared next; checked afterwards, the extension was never enabled and swapchains could not be created\n"
+     "     * as deliberately scaled). */\n"
+     "    if (instance->obj.extensions.has_VK_KHR_win32_surface && vulkan_funcs.host_extensions.has_VK_EXT_surface_maintenance1)\n"
+     "        instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;\n"
+     "    instance->obj.extensions.has_VK_KHR_win32_surface = 0;\n"),
+    ("    if (instance->obj.extensions.has_VK_KHR_win32_surface && vulkan_funcs.host_extensions.has_VK_EXT_surface_maintenance1)\n"
+     "        instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;\n"
+     "    if (use_external_memory())\n",
+     "    if (use_external_memory())\n"),
+    ("    VkSwapchainKHR host_swapchain;\n"
+     "    RECT client_rect;\n"
+     "    VkResult res;\n",
+     "    VkSwapchainKHR host_swapchain;\n"
+     "    VkResult res;\n"),
+    ("    if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI ) ) &&\n"
+     "        !extents_equals( &create_info_host.imageExtent, &client_rect ) &&\n"
+     "        instance->extensions.has_VK_EXT_surface_maintenance1 &&\n"
+     "        physical_device->extensions.has_VK_KHR_swapchain_maintenance1)\n",
+     "    /* Tessera: MoltenVK reports \"suboptimal\" whenever the swapchain differs from the layer's own size on screen,\n"
+     "     * which it measures in screen pixels; a desktop emulated larger than the screen (or DPI scaling) always\n"
+     "     * differs, and games then recreate the swapchain endlessly (black window). Every swapchain is created as\n"
+     "     * deliberately scaled; whether it still matches its window is decided below, in Wine's own size check at\n"
+     "     * acquire and present, which compares in the window's coordinates. */\n"
+     "    if (instance->extensions.has_VK_EXT_surface_maintenance1 &&\n"
+     "        (physical_device->extensions.has_VK_KHR_swapchain_maintenance1 ||\n"
+     "         physical_device->extensions.has_VK_EXT_swapchain_maintenance1) &&\n"
+     "        !find_next_struct( (const VkBaseInStructure *)create_info->pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT ))\n"),
+    ("        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;\n"
+     "        create_info_host.pNext = &scaling;\n",
+     "        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;\n"
+     "        scaling.pNext = (void *)create_info_host.pNext;     /* the app's own structures stay in the chain */\n"
+     "        create_info_host.pNext = &scaling;\n"),
+])
+
+# 4x. DXVK games load the MoltenVK made for DXVK (lib64/dxvk). Wine loads the Vulkan library named in
+#     TESSERA_LIBVULKAN, but only for the WineD3D backend; macOS ignores DYLD_LIBRARY_PATH for Wine's signed loader,
+#     so the variable is the only way to pick another MoltenVK. It now applies on the DXVK backend too.
+exact("dlls/win32u/vulkan.c", [
+    ('        strcmp( graphics_backend, "wined3d" ))\n'
+     '        libvulkan = SONAME_LIBVULKAN;\n',
+     '        (strcmp( graphics_backend, "wined3d" ) && strcmp( graphics_backend, "dxvk" )))  /* Tessera: DXVK too */\n'
+     '        libvulkan = SONAME_LIBVULKAN;\n'),
+])
+
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
     if not re.search(r"CX_|[Cc]ross[Oo]ver|CROSSOVER|CXHTML", text):

@@ -26,6 +26,7 @@ struct TesseraApp: App {
 final class AppModel: ObservableObject {
     @Published var state: SteamSetup.State = .notInstalled
     @Published var games: [Game] = []
+    @Published var macOnly: [Game] = []       // installed Mac versions that cannot run
     @Published var busy: String?
     @Published var error: String?
     @Published var needsAppManagement = false
@@ -38,8 +39,8 @@ final class AppModel: ObservableObject {
     func refresh() {
         state = SteamSetup.state()
         Task.detached(priority: .userInitiated) {
-            let found = GameLibrary.windowsGames()
-            await MainActor.run { self.games = found }
+            let found = GameLibrary.windowsGames(), stuck = GameLibrary.macVersionsThatCannotRun()
+            await MainActor.run { self.games = found; self.macOnly = stuck }
         }
     }
 
@@ -53,6 +54,13 @@ final class AppModel: ObservableObject {
     func uninstall() {
         perform("Removing Tessera from Steam…") {
             try SteamSetup.uninstall()
+            SteamSetup.openSteam()
+        }
+    }
+
+    func playWindowsVersion(_ game: Game) {
+        perform("Switching \(game.name) to its Windows version…") {
+            try SteamSetup.playWindowsVersion(appID: game.id)
             SteamSetup.openSteam()
         }
     }

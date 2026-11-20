@@ -4,6 +4,7 @@ import SwiftUI
 enum Section: Hashable {
     case steam
     case game(String)
+    case macOnly(String)
 }
 
 struct ContentView: View {
@@ -21,6 +22,13 @@ struct ContentView: View {
                         }
                     }
                 }
+                if !model.macOnly.isEmpty {
+                    SwiftUI.Section("Mac versions that can't run") {
+                        ForEach(model.macOnly) { game in
+                            Text(game.name).lineLimit(1).tag(Section.macOnly(game.id))
+                        }
+                    }
+                }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
         } detail: {
@@ -28,6 +36,12 @@ struct ContentView: View {
             case .game(let id):
                 if let game = model.games.first(where: { $0.id == id }) {
                     GameView(game: game).id(game.id)
+                } else {
+                    SteamView()
+                }
+            case .macOnly(let id):
+                if let game = model.macOnly.first(where: { $0.id == id }) {
+                    MacOnlyGameView(game: game).id(game.id)
                 } else {
                     SteamView()
                 }
@@ -182,9 +196,9 @@ struct GameView: View {
                 Text(settings.graphics.detail).font(.callout).foregroundStyle(.secondary)
                 Toggle("Show the Metal performance overlay", isOn: $settings.showHUD)
                 Toggle("Ray tracing (DirectX Raytracing, D3DMetal)", isOn: $settings.raytracing)
-                    .disabled(settings.graphics == .dxmt || settings.graphics == .wined3d)
+                    .disabled(settings.graphics == .dxmt || settings.graphics == .dxvk || settings.graphics == .wined3d)
                 Toggle("Resolutions up to \(Self.screenSizes.full)", isOn: $settings.fullResolution)
-                Text("On (the default), the game starts on the screen's full \(Self.screenSizes.full) and its menu lists every size up to that: sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller. Off, the game's desktop is the Mac desktop size (\(Self.screenSizes.desktop)) and games using D3DMetal offer sizes only up to that.")
+                Text("On (the default), a game that may draw through D3DMetal's DirectX 10–12 starts on the screen's full \(Self.screenSizes.full), because D3DMetal offers sizes only up to the desktop: its menu then lists every size, sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller. 32-bit games, games drawing through Direct3D 9, OpenGL or Vulkan, games on DXMT, DXVK or WineD3D and Chromium-based games (RPG Maker MV/MZ) list every size on the Mac desktop size (\(Self.screenSizes.desktop)) and keep it. Off, every game uses the Mac desktop size.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             SwiftUI.Section("Steam") {
@@ -229,5 +243,52 @@ struct GameView: View {
             parts.append("last played " + played.formatted(.relative(presentation: .named)))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - a game whose Mac version cannot run
+
+struct MacOnlyGameView: View {
+    @EnvironmentObject var model: AppModel
+    let game: Game
+    @State private var confirm = false
+
+    private var ready: Bool { if case .installed = model.state { return true } else { return false } }
+
+    var body: some View {
+        Form {
+            SwiftUI.Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.name).font(.title2.weight(.semibold))
+                    Text("Mac version installed · \(ByteCountFormatter.string(fromByteCount: game.sizeOnDisk, countStyle: .file))")
+                        .foregroundStyle(.secondary).font(.callout)
+                }
+            }
+            SwiftUI.Section("This Mac version can't run") {
+                Text("Steam installed this game's Mac version, a 32-bit program. macOS 10.15 and later run only 64-bit programs, so it can't start. Tessera can play the game's Windows version instead: Steam downloads the Windows files in place of the Mac ones, and the game then appears under Windows games.")
+                    .font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Button("Play the Windows Version…") { confirm = true }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.busy != nil || !ready)
+                    if let busy = model.busy {
+                        ProgressView().controlSize(.small)
+                        Text(busy).font(.callout)
+                    }
+                }
+                if !ready {
+                    Text("Tessera isn't ready in Steam yet: open Steam in the sidebar to set it up or repair it.").font(.callout).foregroundStyle(.orange)
+                }
+                if let error = model.error {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog("Play the Windows version of \(game.name)?", isPresented: $confirm) {
+            Button("Switch to the Windows Version") { model.playWindowsVersion(game) }
+        } message: {
+            Text("Steam will quit for a moment and open again, then download the Windows version in place of the Mac one.")
+        }
     }
 }

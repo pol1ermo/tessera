@@ -371,6 +371,8 @@ __attribute__((used, section("__DATA,__interpose"))) static struct { const void 
 };
 
 void tessera_activation_init(void);
+/// For activation.m: a line in Tessera's steam.log (Steam's processes do not reach the system log)
+void tessera_steam_log(const char *line) { tlog("%s", line); }
 
 __attribute__((constructor)) static void tessera_steam_init(void) {
     char exe[1024] = "";
@@ -413,3 +415,7 @@ __attribute__((constructor)) static void tessera_steam_init(void) {
 }
 
 #endif // __arm64__
+
+#ifndef __arm64__
+void tessera_steam_log(const char *line) { (void)line; }   // Intel Macs: Steam runs without this library's hooks
+#endif

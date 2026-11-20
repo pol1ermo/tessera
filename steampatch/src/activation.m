@@ -7,6 +7,8 @@
 // programs of Steam games (their Windows folder is inside a Steam library's compatdata folder).
 #import <AppKit/AppKit.h>
 
+void tessera_steam_log(const char *line);   // tessera_steam.c
+
 @interface TesseraActivation : NSObject
 @end
 
@@ -23,7 +25,9 @@
         if (!game) return;
         [NSApp yieldActivationToApplication:game];
         BOOL ok = [game activateFromApplication:[NSRunningApplication currentApplication] options:0];
-        NSLog(@"Tessera: game window to the front (pid %d): %@", game.processIdentifier, ok ? @"done" : @"refused by macOS");
+        tessera_steam_log([NSString stringWithFormat:@"game window to the front (pid %d, %@ was active): %@",
+                           game.processIdentifier, NSApp.isActive ? @"this process" : @"another app",
+                           ok ? @"done" : @"refused by macOS"].UTF8String);
     }
 }
 @end
@@ -38,5 +42,6 @@ void tessera_activation_init(void)
                                                                 name:@"WineAppWillActivateNotification"
                                                               object:nil
                                                   suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+        tessera_steam_log("games come to the front through this process (activation hand-over)");
     }
 }

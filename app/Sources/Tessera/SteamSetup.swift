@@ -63,6 +63,9 @@ enum SteamSetup {
         if CompatMappings.uses(legacyToolNames) {
             return .needsRepair("Steam has to restart once to finish the update (Steam Cloud saves)")
         }
+        if !rosettaInstalled {
+            return .needsRepair("Apple's Rosetta 2 is not installed; Windows games run through it. Repair installs it (you agree to Apple's licence for Rosetta)")
+        }
         return .installed
     }
 
@@ -160,12 +163,36 @@ enum SteamSetup {
     static let appManagementSettings = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles")!
 
     static func install(useForAllWindowsGames: Bool, setDefaultTool: Bool = true) throws {
+        try installRosetta()
         guard quitSteam() else { throw SetupError.steamRunning }
         try CompatMappings.renameTool(from: legacyToolNames, to: toolName)
         try installFiles()
         try patchSteamApp()
         if setDefaultTool {
             try CompatMappings.setDefaultTool(toolName, replacingOtherTools: useForAllWindowsGames)
+        }
+    }
+
+    /// Steam downloads the Windows version of a game whose Mac version cannot run and plays it through Tessera.
+    static func playWindowsVersion(appID: String) throws {
+        guard quitSteam() else { throw SetupError.steamRunning }
+        try CompatMappings.useTool(toolName, forApp: appID)
+    }
+
+    /// Wine runs Intel code through Apple's Rosetta 2. Apple-silicon Macs get it only when something asks for it, and
+    /// Steam runs natively, so without it every Windows game fails to start whatever the graphics. Apple's
+    /// softwareupdate installs it without an administrator password. TESSERA_TEST_NO_ROSETTA=1 pretends it is missing.
+    static var rosettaInstalled: Bool {
+        ProcessInfo.processInfo.environment["TESSERA_TEST_NO_ROSETTA"] != "1"
+            && FileManager.default.fileExists(atPath: rosettaRuntime)
+    }
+    static let rosettaRuntime = "/Library/Apple/usr/libexec/oah/libRosettaRuntime"
+
+    static func installRosetta() throws {
+        guard !rosettaInstalled else { return }
+        let result = run("/usr/sbin/softwareupdate", ["--install-rosetta", "--agree-to-license"], timeout: 600)
+        guard FileManager.default.fileExists(atPath: rosettaRuntime) else {
+            throw SetupError.failed("Installing Apple's Rosetta 2 failed (softwareupdate exit \(result.status)). In Terminal: softwareupdate --install-rosetta")
         }
     }
 
@@ -284,6 +311,12 @@ enum CompatMappings {
             try? FileManager.default.createDirectory(at: Paths.backups, withIntermediateDirectories: true)
             try? JSONEncoder().encode(previous).write(to: previousChoicesFile)
         }
+    }
+
+    /// One game plays through this tool although Steam has a Mac version of it: Steam then downloads its Windows
+    /// version (Steam must be closed).
+    static func useTool(_ tool: String, forApp id: String) throws {
+        try edit { m in m[id] = Mapping(name: tool, config: "", priority: "250") }
     }
 
     /// Whether any game is mapped to one of these tool names.

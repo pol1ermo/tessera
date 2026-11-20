@@ -40,10 +40,19 @@ enum GameLibrary {
         return out
     }
 
-    /// Installed games whose folder holds Windows programs and no Mac app - the ones Tessera runs.
+    /// Games set to Tessera one by one (Play the Windows Version): Steam then installs the Windows version, and may
+    /// leave the Mac version's files next to it.
+    static func gamesSetToTessera() -> Set<String> {
+        let tools = Set([SteamSetup.toolName] + SteamSetup.legacyToolNames)
+        return Set(CompatMappings.read().filter { $0.key != "0" && tools.contains($0.value.name) }.keys)
+    }
+
+    /// Installed games whose folder holds Windows programs and no Mac program, or that are set to Tessera on their
+    /// own - the ones Tessera runs.
     static func windowsGames() -> [Game] {
         var games: [Game] = []
         let fm = FileManager.default
+        let setToTessera = gamesSetToTessera()
         for lib in libraries() {
             let apps = lib.appendingPathComponent("steamapps")
             guard let files = try? fm.contentsOfDirectory(atPath: apps.path) else { continue }
@@ -52,7 +61,7 @@ enum GameLibrary {
                       let id = kv["appid"], let name = kv["name"], let dir = kv["installdir"] else { continue }
                 if id == "228980" { continue }      // Steamworks Common Redistributables
                 let install = apps.appendingPathComponent("common/\(dir)")
-                guard isWindowsGame(install) else { continue }
+                guard isWindowsGame(install, macFilesAllowed: setToTessera.contains(id)) else { continue }
                 let played = Double(kv["LastPlayed"] ?? "").flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
                 games.append(Game(id: id, name: name, installDir: install,
                                   sizeOnDisk: Int64(kv["SizeOnDisk"] ?? "") ?? 0, lastPlayed: played))
@@ -61,17 +70,107 @@ enum GameLibrary {
         return games.sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
     }
 
-    static func isWindowsGame(_ dir: URL) -> Bool {
+    /// Installed games that Steam gave their Mac version where that version cannot run: a 32-bit program (macOS 10.15
+    /// and later run only 64-bit ones). Tessera can play their Windows version instead.
+    static func macVersionsThatCannotRun() -> [Game] {
+        var games: [Game] = []
+        let fm = FileManager.default
+        let setToTessera = gamesSetToTessera()
+        for lib in libraries() {
+            let apps = lib.appendingPathComponent("steamapps")
+            guard let files = try? fm.contentsOfDirectory(atPath: apps.path) else { continue }
+            for f in files where f.hasPrefix("appmanifest_") && f.hasSuffix(".acf") {
+                guard let kv = keyValues(apps.appendingPathComponent(f)),
+                      let id = kv["appid"], let name = kv["name"], let dir = kv["installdir"],
+                      !setToTessera.contains(id) else { continue }
+                let install = apps.appendingPathComponent("common/\(dir)")
+                // a Mac version can carry Windows files from depots both versions share (Portal 2: portal2.exe), so
+                // the Mac programs decide
+                let programs = macPrograms(in: install)
+                guard !programs.isEmpty, !programs.contains(where: macProgramRuns) else { continue }
+                let played = Double(kv["LastPlayed"] ?? "").flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+                games.append(Game(id: id, name: name, installDir: install,
+                                  sizeOnDisk: Int64(kv["SizeOnDisk"] ?? "") ?? 0, lastPlayed: played))
+            }
+        }
+        return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The Mac programs at the top of a game's folder: app bundles' programs and plain Mach-O programs (Valve's Source
+    /// games: portal2_osx, hl2_osx). Steam installs them only when it installed the game's Mac version.
+    static func macPrograms(in dir: URL) -> [URL] {
+        guard let top = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+        var programs: [URL] = []
+        for name in top.prefix(400) {
+            let url = dir.appendingPathComponent(name)
+            if name.hasSuffix(".app") {
+                if let program = appProgram(url) { programs.append(program) }
+            } else if !name.contains("."), isMachO(url) {
+                programs.append(url)
+            }
+        }
+        return programs
+    }
+
+    /// Whether a file is a Mach-O program or a universal file of them.
+    static func isMachO(_ file: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue,
+              let h = FileHandle(forReadingAtPath: file.path) else { return false }
+        defer { try? h.close() }
+        let b = [UInt8]((try? h.read(upToCount: 8)) ?? Data())
+        guard b.count == 8 else { return false }
+        let magic = UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
+        let count = UInt32(b[4]) << 24 | UInt32(b[5]) << 16 | UInt32(b[6]) << 8 | UInt32(b[7])
+        switch magic {
+        case 0xCEFA_EDFE, 0xCFFA_EDFE, 0xFEED_FACE, 0xFEED_FACF: return true
+        case 0xCAFE_BABE, 0xCAFE_BABF: return count > 0 && count < 32          // (a Java class file has a large count)
+        default: return false
+        }
+    }
+
+    /// An app bundle's program (Info.plist CFBundleExecutable).
+    static func appProgram(_ app: URL) -> URL? {
+        guard let plist = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist")),
+              let exe = plist["CFBundleExecutable"] as? String else { return nil }
+        return app.appendingPathComponent("Contents/MacOS/\(exe)")
+    }
+
+    /// Whether a Mac program can run here: a 64-bit Intel or Apple-silicon program, alone or in a universal file.
+    /// Files that are not Mach-O programs (scripts) count as runnable.
+    static func macProgramRuns(_ program: URL) -> Bool {
+        guard let h = FileHandle(forReadingAtPath: program.path) else { return true }
+        defer { try? h.close() }
+        let b = [UInt8]((try? h.read(upToCount: 4096)) ?? Data())
+        func be32(_ o: Int) -> UInt32 {
+            o + 4 <= b.count ? UInt32(b[o]) << 24 | UInt32(b[o + 1]) << 16 | UInt32(b[o + 2]) << 8 | UInt32(b[o + 3]) : 0
+        }
+        let x86_64: UInt32 = 0x0100_0007, arm64: UInt32 = 0x0100_000C
+        switch be32(0) {
+        case 0xCAFE_BABE, 0xCAFE_BABF:                  // universal file: a list of programs (big-endian headers)
+            let count = Int(be32(4)), size = be32(0) == 0xCAFE_BABF ? 32 : 20
+            guard count > 0, count < 32 else { return true }
+            return (0..<count).contains { [x86_64, arm64].contains(be32(8 + $0 * size)) }
+        case 0xCFFA_EDFE: return true                    // 64-bit program (0xFEEDFACF, little-endian)
+        case 0xCEFA_EDFE: return false                   // 32-bit program (0xFEEDFACE, little-endian)
+        default: return true
+        }
+    }
+
+    /// A folder with Windows programs and, unless the game is set to Tessera on its own (then Steam may leave the
+    /// Mac version's files beside the Windows ones), no Mac program.
+    static func isWindowsGame(_ dir: URL, macFilesAllowed: Bool = false) -> Bool {
         let fm = FileManager.default
         guard let top = try? fm.contentsOfDirectory(atPath: dir.path) else { return false }
-        if top.contains(where: { $0.hasSuffix(".app") }) { return false }
+        // Steam installed the Mac version (which may also carry Windows files from depots both versions share)
+        if !macFilesAllowed, top.contains(where: { $0.hasSuffix(".app") }) || !macPrograms(in: dir).isEmpty { return false }
         if top.contains(where: { $0.lowercased().hasSuffix(".exe") }) { return true }
         // Unreal and similar engines keep the program one or two folders down
         guard let walker = fm.enumerator(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return false }
         var seen = 0
         for case let url as URL in walker {
             if walker.level > 3 { walker.skipDescendants(); continue }
-            if url.pathExtension == "app" { return false }
+            if url.pathExtension == "app" { if macFilesAllowed { walker.skipDescendants(); continue }; return false }
             if url.pathExtension.lowercased() == "exe" { return true }
             seen += 1
             if seen > 4000 { break }
@@ -96,21 +195,23 @@ enum GameLibrary {
 /// Per-game options, stored as NAME=value lines that Tessera's launcher applies when Steam starts the game.
 struct GameSettings: Equatable {
     enum Graphics: String, CaseIterable, Identifiable {
-        case automatic, d3dmetal, dxmt, wined3d
+        case automatic, d3dmetal, dxmt, dxvk, wined3d
         var id: String { rawValue }
         var label: String {
             switch self {
             case .automatic: return "Automatic (recommended)"
             case .d3dmetal: return "D3DMetal"
             case .dxmt: return "DXMT"
+            case .dxvk: return "DXVK (Vulkan)"
             case .wined3d: return "WineD3D (OpenGL)"
             }
         }
         var detail: String {
             switch self {
-            case .automatic: return "D3DMetal for most games; DXMT for GameMaker games, which D3DMetal shows error boxes in."
+            case .automatic: return "D3DMetal for most games; DXMT for GameMaker games, BeamNG and 32-bit DirectX 11 games (D3DMetal is 64-bit only); DXVK for Skyrim Special Edition."
             case .d3dmetal: return "Apple's DirectX 11/12 translation. Fastest for most games."
             case .dxmt: return "Open-source DirectX 11 translation to Metal. Try it if a DirectX 11 game misbehaves."
+            case .dxvk: return "DirectX 9-11 translated to Vulkan (DXVK for macOS, on its own MoltenVK). For games that crash with D3DMetal and DXMT."
             case .wined3d: return "Wine's own DirectX 9-11 translation. For older games."
             }
         }

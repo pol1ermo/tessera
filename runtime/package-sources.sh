@@ -58,12 +58,15 @@ cp "$DL/gstreamer-mono-1.28.9.tar.gz" "$STAGE/gstreamer/gstreamer-1.28.9.tar.gz"
 cp "$GST"/subprojects/packagecache/* "$STAGE/gstreamer/"
 tar -C "$GST/subprojects" --exclude .git -czf "$STAGE/gstreamer/orc-0.4.42.tar.gz" orc
 cp "$DL/MoltenVK-1.4.2.tar.gz" "$STAGE/"
+# the DXVK backend: DXVK for macOS and its MoltenVK as in Wine's source archive (build-dxvk.sh patches them)
+cp -pR "$S/dxvk" "$STAGE/dxvk-macos"
+cp -pR "$S/moltenvk" "$STAGE/moltenvk-for-dxvk"
 
 echo "== Steam bridge"
 cp -pR "$HOME/.tessera/build/bridge/src" "$STAGE/steam-bridge/lsteamclient"
 cp -pR "$HERE/../bridge/steam-helper" "$STAGE/steam-bridge/steam-helper"
 
-cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-moltenvk.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
+cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-moltenvk.sh" "$HERE/build-dxvk.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
    "$HERE/../bridge/build-bridge.sh" "$HERE/../bridge/mac-adapt.py" "$STAGE/scripts/"
 cat > "$STAGE/README.txt" <<'EOF'
 Sources of the Windows runtime inside Tessera
@@ -79,10 +82,15 @@ Sources of the Windows runtime inside Tessera
                    (LGPL 2.1+), proxy-libintl 0.5 (LGPL 2.1+), libffi (MIT), pcre2 10.47 (BSD), orc 0.4.42 (BSD).
                    Built by scripts/build-gstreamer.sh.
   MoltenVK-1.4.2.tar.gz  MoltenVK 1.4.2 as released (Apache 2.0); scripts/build-moltenvk.sh applies Tessera's change.
+  dxvk-macos/            DXVK 1.10.3 for macOS (zlib), from the same source archive as Wine.
+  moltenvk-for-dxvk/     the MoltenVK 1.2.10 fork DXVK for macOS is made for, with its SPIRV-Cross (Apache 2.0); used
+                         only by games on DXVK. scripts/build-dxvk.sh builds both (with glslang 15.1.0 for DXVK's shaders).
+  Wine Mono 10.4.1       shipped unchanged (share/wine/mono); its source is wine-mono-10.4.1-src.tar.xz, published next
+                         to this archive (also at dl.winehq.org/wine/wine-mono/10.4.1/).
   steam-bridge/    lsteamclient from Valve's Proton, adapted for the macOS Steam client, and Tessera's steam.exe
 
 Build order (macOS on Apple silicon, Xcode, llvm-mingw for the Windows side): scripts/build-deps.sh,
-scripts/build-gstreamer.sh, scripts/build-wine.sh, scripts/build-bridge.sh, scripts/assemble.sh. The scripts expect these folders under
+scripts/build-gstreamer.sh, scripts/build-wine.sh, scripts/build-bridge.sh, scripts/build-dxvk.sh, scripts/assemble.sh. The scripts expect these folders under
 ~/.tessera/build (see the paths at the top of each script).
 EOF
 find "$STAGE" -name ".git" -prune -exec rm -rf {} +

@@ -5,6 +5,7 @@
 #   libraries       $RT/deps                        (build-deps.sh: FreeType, GnuTLS, Nettle, GMP) + MoltenVK
 #   D3DMetal        Apple's Game Porting Toolkit redistributable, copied unmodified with Apple's signature
 #   DXMT            the official release            (DirectX 11 -> Metal, the alternative to D3DMetal)
+#   DXVK            build-dxvk.sh                   (CodeWeavers' DXVK, Direct3D 9-11 -> Vulkan, with its own MoltenVK)
 #   Steam bridge    bridge/build-bridge.sh output   (lets Windows games talk to the Mac Steam client)
 #
 # Layout of the result:
@@ -12,22 +13,27 @@
 #   lib/wine/{x86_64-windows,i386-windows,x86_64-unix}   Wine; d3d10/11/12/dxgi are Apple's D3DMetal (the default)
 #   lib/wined3d/x86_64-windows                            Wine's own d3d10/11/12/dxgi (TESSERA_BACKEND_DIR)
 #   lib/dxmt/...                                          DXMT (TESSERA_BACKEND_DIR)
+#   lib/dxvk/{x86_64-windows,i386-windows}                DXVK + Wine's dxgi (TESSERA_BACKEND_DIR)
+#   lib64/dxvk/libMoltenVK.dylib                          the MoltenVK DXVK is made for (Wine loads it via TESSERA_LIBVULKAN)
 #   lib/tessera-steam/...                                 the Steam bridge (WINEDLLPATH)
 #   lib64/*.dylib, lib64/apple_gptk/{external,wine}       libraries and D3DMetal
 #   share/wine                                            wine.inf, NLS tables, fonts
+#   share/wine/mono/wine-mono-<version>                   Wine Mono (.NET Framework programs)
 set -euo pipefail
 RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
 WINE=$RT/wine-stage/opt/tessera
 DEPS=$RT/deps
 GPTK=${TESSERA_GPTK:-$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/apple_gptk}
 DXMT=${TESSERA_DXMT:-$RT/dxmt/v0.80}
+DXVK=${TESSERA_DXVK:-$RT/deps/dxvk}
 BRIDGE=${TESSERA_BRIDGE:-$HOME/.tessera/build/bridge/out}
 MINGW=$HOME/.tessera/build/llvm-mingw-20261117-ucrt-macos-universal
 OUT=${1:-$RT/out/Runtime}
 step() { echo "== $1"; }
 
-for need in "$WINE/bin/wine" "$DEPS/lib/libgnutls.30.dylib" "$GPTK/external/libd3dshared.dylib" \
-            "$DXMT/x86_64-windows/d3d11.dll" "$BRIDGE/x86_64-unix/lsteamclient.so" "$BRIDGE/i386-windows/steam.exe"; do
+for need in "$WINE/bin/wine" "$WINE/bin/winebuild" "$DEPS/lib/libgnutls.30.dylib" "$GPTK/external/libd3dshared.dylib" \
+            "$DXMT/x86_64-windows/d3d11.dll" "$BRIDGE/x86_64-unix/lsteamclient.so" "$BRIDGE/i386-windows/steam.exe" \
+            "$DXVK/x86_64-windows/d3d11.dll" "$DXVK/i386-windows/d3d11.dll" "$DXVK/libMoltenVK.dylib"; do
     [ -e "$need" ] || { echo "missing: $need"; exit 1; }
 done
 rm -rf "$OUT"
@@ -39,6 +45,19 @@ ln -s wine "$OUT/bin/wineloader"
 ditto "$WINE/lib/wine" "$OUT/lib/wine"
 ditto "$WINE/share/wine" "$OUT/share/wine"
 find "$OUT/lib/wine" -name "*.a" -delete                      # import libraries are for building, not running
+
+step "Wine Mono"
+# .NET Framework programs (game launchers, tools) run on Wine Mono: the version this Wine asks for (mscoree's
+# WINE_MONO_VERSION), unpacked where Wine looks for it (share/wine/mono/wine-mono-<version>), so Wine never offers to
+# download it. The download is checked against its known SHA-256.
+MONO_VERSION=$(sed -n 's/^#define WINE_MONO_VERSION "\(.*\)"/\1/p' "$RT/src/wine/dlls/mscoree/mscoree_private.h")
+MONO_SHA256=a16606ef0724202e6a6848ece6e0cbba64d11e2f11aefe744af1d93c6d9f99bb    # wine-mono-10.4.1-x86.tar.xz
+[ "$MONO_VERSION" = 10.4.1 ] || { echo "Wine expects Wine Mono $MONO_VERSION: update MONO_SHA256"; exit 1; }
+MONO_TAR=$HOME/.tessera/build/downloads/wine-mono-$MONO_VERSION-x86.tar.xz
+[ -f "$MONO_TAR" ] || curl -fL --retry 3 -o "$MONO_TAR" "https://dl.winehq.org/wine/wine-mono/$MONO_VERSION/wine-mono-$MONO_VERSION-x86.tar.xz"
+[ "$(shasum -a 256 "$MONO_TAR" | cut -d' ' -f1)" = "$MONO_SHA256" ] || { echo "Wine Mono download does not match"; exit 1; }
+mkdir -p "$OUT/share/wine/mono"
+tar -C "$OUT/share/wine/mono" -xJf "$MONO_TAR"
 
 step "debug info"
 # Left in, Wine's own dbghelp trips over it and kills the process that touched it (Steam's helpers, every time)
@@ -140,6 +159,19 @@ for rp in "@loader_path/../../wine/x86_64-unix" "@loader_path/../../../lib64"; d
     install_name_tool -add_rpath "$rp" "$OUT/lib/dxmt/x86_64-unix/winemetal.so" 2>/dev/null || true
 done
 
+step "DXVK"
+# CodeWeavers' DXVK for macOS and the MoltenVK it is made for (with the runtime's MoltenVK 1.4.2 it crashes at once);
+# Wine's own dxgi goes with it, as in CrossOver: DXVK presents through it. Only games on DXVK use either.
+mkdir -p "$OUT/lib/dxvk/x86_64-windows" "$OUT/lib/dxvk/i386-windows" "$OUT/lib64/dxvk"
+cp "$DXVK"/x86_64-windows/*.dll "$OUT/lib/dxvk/x86_64-windows/"
+cp "$DXVK"/i386-windows/*.dll "$OUT/lib/dxvk/i386-windows/"
+# Wine loads a DLL from a game's backend folder (TESSERA_BACKEND_DIR) only if it is marked as a Wine builtin, and
+# otherwise falls back to the default D3DMetal ones without a word; CrossOver's DXVK DLLs carry the same mark
+"$WINE/bin/winebuild" --builtin "$OUT"/lib/dxvk/x86_64-windows/*.dll "$OUT"/lib/dxvk/i386-windows/*.dll
+cp "$OUT/lib/wined3d/x86_64-windows/dxgi.dll" "$OUT/lib/dxvk/x86_64-windows/dxgi.dll"
+cp "$OUT/lib/wine/i386-windows/dxgi.dll" "$OUT/lib/dxvk/i386-windows/dxgi.dll"
+cp "$DXVK/libMoltenVK.dylib" "$OUT/lib64/dxvk/libMoltenVK.dylib"
+
 step "Steam bridge"
 SB="$OUT/lib/tessera-steam"
 mkdir -p "$SB/x86_64-windows" "$SB/i386-windows" "$SB/x86_64-unix"
@@ -173,6 +205,7 @@ rm -f "$ENT"
 find "$OUT/lib/wine/x86_64-unix" "$OUT/lib/dxmt/x86_64-unix" "$SB/x86_64-unix" -name "*.so" -type f \
      -exec codesign --force --sign - {} \; 2>/dev/null
 find "$OUT/lib64" -maxdepth 1 -name "*.dylib" -type f -exec codesign --force --sign - {} \; 2>/dev/null
+codesign --force --sign - "$OUT/lib64/dxvk/libMoltenVK.dylib"
 xattr -cr "$OUT" 2>/dev/null || true
 codesign -v "$OUT/lib64/apple_gptk/external/libd3dshared.dylib" && echo "   D3DMetal keeps Apple's signature"
 
@@ -186,11 +219,13 @@ cat > "$OUT/tessera-runtime.json" <<EOF
     "D3DMetal": "Apple Game Porting Toolkit redistributable (unmodified)",
     "DXMT": "$(basename "$DXMT")",
     "MoltenVK": "1.4.2",
+    "DXVK": "1.10.3 for macOS (built from source)",
+    "MoltenVK for DXVK": "1.2.10 (built from source)",
     "FreeType": "$(sed -n 's/^#define FREETYPE_MAJOR *//p;s/^#define FREETYPE_MINOR *//p;s/^#define FREETYPE_PATCH *//p' "$DEPS/include/freetype2/freetype/freetype.h" | paste -sd. -)",
     "GnuTLS": "$(sed -n 's/^#define GNUTLS_VERSION "\(.*\)"/\1/p' "$DEPS/include/gnutls/gnutls.h")",
     "FFmpeg": "$([ -f "$DEPS/lib/libavcodec.61.dylib" ] && echo 7.1.1 || echo none)"
   },
-  "graphics": ["d3dmetal", "dxmt", "wined3d"]
+  "graphics": ["d3dmetal", "dxmt", "dxvk", "wined3d"]
 }
 EOF
 
@@ -199,10 +234,11 @@ step "check"
 leaks=$(grep -rl -a -E "$HOME|/Users/[a-z]" "$OUT" 2>/dev/null | grep -v "/apple_gptk/" \
         | while read -r f; do strings -a "$f" | grep -E "$HOME|/Users/[a-z]" | grep -v "/Users/runner/" | grep -q . && echo "$f"; done | head -5 || true)
 [ -z "$leaks" ] && echo "   no build-machine paths" || { echo "   build-machine paths in:"; echo "$leaks" | sed 's/^/     /'; }
-# brand names only; skipped: FFmpeg ("crossover" is an audio term there), fonts (they credit their designers), and
+# brand names only; skipped: FFmpeg ("crossover" is an audio term there), fonts (they credit their designers), Wine
+# Mono (its libraries credit their authors), CodeWeavers' DXVK and MoltenVK (theirs, credited as such), and
 # copyright lines inside embedded scripts - credits and copyright notices must stay
 brand=$(grep -rl -a -E "CrossOver|Crossover|CROSSOVER|CodeWeavers|Codeweavers|codeweavers" "$OUT" 2>/dev/null \
-        | grep -v -E "/apple_gptk/|/lib64/libav|/share/wine/fonts/" | while read -r f; do
+        | grep -v -E "/apple_gptk/|/lib64/libav|/share/wine/fonts/|/share/wine/mono/|/lib/dxvk/|/lib64/dxvk/" | while read -r f; do
             strings -a "$f" | grep -E "CrossOver|Crossover|CROSSOVER|CodeWeavers|Codeweavers|codeweavers" \
                 | grep -v -i -E "copyright|\(c\)" | grep -q . && echo "$f"; done | head -8 || true)
 [ -z "$brand" ] && echo "   no CrossOver/CodeWeavers text" || { echo "   CrossOver/CodeWeavers text in:"; echo "$brand" | sed 's/^/     /'; }

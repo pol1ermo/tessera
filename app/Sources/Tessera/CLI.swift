@@ -5,10 +5,11 @@ import Foundation
 ///     Tessera.app/Contents/MacOS/Tessera --status
 ///     Tessera.app/Contents/MacOS/Tessera --install [--all-games] [--keep-mappings]
 ///     Tessera.app/Contents/MacOS/Tessera --uninstall
+///     Tessera.app/Contents/MacOS/Tessera --play-windows-version APPID
 ///
 /// TESSERA_STEAM_APP=/path/to/Steam.app points every step at another copy of Steam.app.
 enum CLI {
-    static let commands = ["--status", "--install", "--uninstall", "--help"]
+    static let commands = ["--status", "--install", "--uninstall", "--play-windows-version", "--help"]
 
     /// Runs a command and exits when the app was started with one; returns otherwise.
     static func runIfRequested() {
@@ -20,15 +21,22 @@ enum CLI {
                 print("Steam.app: \(Paths.steamApp.path)")
                 print("state: \(describe(SteamSetup.state()))")
                 for game in GameLibrary.windowsGames() { print("  \(game.id)\t\(game.name)") }
+                let stuck = GameLibrary.macVersionsThatCannotRun()
+                if !stuck.isEmpty { print("Mac versions that cannot run (32-bit):") }
+                for game in stuck { print("  \(game.id)\t\(game.name)") }
             case "--install":
                 try SteamSetup.install(useForAllWindowsGames: args.contains("--all-games"),
                                        setDefaultTool: !args.contains("--keep-mappings"))
                 print("state: \(describe(SteamSetup.state()))")
+            case "--play-windows-version":
+                guard args.count > 1, Int(args[1]) != nil else { throw SteamSetup.SetupError.failed("usage: --play-windows-version APPID") }
+                try SteamSetup.playWindowsVersion(appID: args[1])
+                print("\(args[1]) now plays its Windows version through Tessera; open Steam to download it")
             case "--uninstall":
                 try SteamSetup.uninstall()
                 print("state: \(describe(SteamSetup.state()))")
             default:
-                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall")
+                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --play-windows-version APPID")
             }
             exit(0)
         } catch {
