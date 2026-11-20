@@ -1,0 +1,13 @@
+Tessera: newer libc++ cannot take the address of std::unique_ptr::operator* for std::views::transform;
+a lambda does the same (dereference each effect-slot cluster).
+--- a/alc/alc.cpp
++++ b/alc/alc.cpp
+@@ -1781,7 +1781,7 @@
+          * configuration in aluInitEffectPanning.
+          */
+         std::ranges::for_each(context->mEffectSlotClusters
+-            | std::views::transform(&ContextBase::EffectSlotCluster::operator*)
++            | std::views::transform([](ContextBase::EffectSlotCluster &cluster) -> auto& { return *cluster; })
+             | std::views::join, [](EffectSlotBase &slot)
+         {
+             slot.mWetBuffer.clear();

@@ -142,18 +142,23 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
         }
         log("per-game settings from \(settings.lastPathComponent)")
     }
-    // .NET Framework programs (launchers, tools) run on Wine Mono, which the runtime carries (share/wine/mono), so
-    // Wine never asks to download it; no Gecko (Internet Explorer engine) installer prompts
+    // .NET Framework programs (launchers, tools) run on Wine Mono and pages in embedded browsers on Wine Gecko (the
+    // Internet Explorer engine); the runtime carries both (share/wine/mono, share/wine/gecko), so Wine never asks to
+    // download them
     // winemenubuilder off: it would put shortcut apps into ~/Applications when games install
     // Microsoft's C++ runtime: Steam installs it into the Windows folder on a game's first start (its redistributable
     // step), as on Windows, and newer games accept only that version (Unreal 5's starter refused Wine's 14.42 copy:
     // "Microsoft Visual C++ 2015-2022 Redistributable (x64) is required"). The installed files go first; without them
     // Wine's own copies load.
     // A game's own WINEDLLOVERRIDES (settings above) comes last, so it adds to these instead of replacing them.
-    let msvcRuntime = "msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,concrt140=n,b"
+    // Microsoft's Visual C++ 2005-2013 runtimes and MFC come with Tessera's Windows extras (WindowsExtras.swift):
+    // theirs first as well, Wine's own where a folder does not have them (yet).
+    let msvcRuntime = "msvcp140,msvcp140_1,msvcp140_2,msvcp140_atomic_wait,msvcp140_codecvt_ids,vcruntime140,vcruntime140_1,concrt140,"
+        + "vcomp140,vcamp140,vccorlib140,msvcp120,msvcr120,vcomp120,msvcp110,msvcr110,vcomp110,atl110,msvcp100,msvcr100,vcomp100,atl100,"
+        + "msvcp90,msvcr90,msvcm90,vcomp90,atl90,msvcp80,msvcr80,msvcm80,vcomp,atl80=n,b"
     // winedbg off: a crashed game closes (Wine's crash debugger kept crashed programs open for good - Steam still showed
     // them running); the log keeps Wine's "Unhandled page fault ..." line with the crash address.
-    let overrides = ["mshtml=d", "winemenubuilder.exe=d", "winedbg.exe=d", "steam.exe=b", msvcRuntime,
+    let overrides = ["winemenubuilder.exe=d", "winedbg.exe=d", "steam.exe=b", msvcRuntime,
                      env["WINEDLLOVERRIDES"]].compactMap { $0 }.filter { !$0.isEmpty }
     env["WINEDLLOVERRIDES"] = overrides.joined(separator: ";")
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
@@ -471,7 +476,8 @@ func prefixTemplate(env: [String: String]) -> URL? {
     // Wine Mono in the runtime (share/wine/mono) changes what Wine's set-up installs (.NET support), so it is part of it
     let mono = ((try? fm.contentsOfDirectory(atPath: runtime.root.appendingPathComponent("share/wine/mono").path)) ?? [])
         .sorted().joined(separator: ",")
-    let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)|\(mono)")
+    // the Windows extras installed into it (WindowsExtras.swift) are part of it too
+    let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)|\(mono)|extras \(windowsExtrasVersion)")
     let template = templatesDir.appendingPathComponent(key)
     let ready = { fm.fileExists(atPath: template.appendingPathComponent("system.reg").path) }
     if ready() { return template }
@@ -480,6 +486,7 @@ func prefixTemplate(env: [String: String]) -> URL? {
     let building = templatesDir.appendingPathComponent("\(key).building-\(getpid())")
     try? fm.removeItem(at: building)
     buildPrefix(building, env: env)
+    installWindowsExtras(building, env: env, waitForServer: true)
     if fm.fileExists(atPath: building.appendingPathComponent("system.reg").path), !ready() {
         try? fm.moveItem(at: building, to: template)
     }
@@ -569,6 +576,8 @@ if let previous = try? String(contentsOf: desktopMarker, encoding: .utf8) {
     }
 }
 ensurePrefix(prefix, env: env)
+// a folder made before this Tessera version (or while offline) gets the Windows extras now, once
+installWindowsExtras(prefix, env: env, waitForServer: false)
 try? (desktopSize + (isSteamHelper(exePath) ? " helper" : "")).write(to: desktopMarker, atomically: true, encoding: .utf8)
 
 // Steam's Stop button and quitting Steam end this process; take the game's processes down with it.

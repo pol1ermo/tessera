@@ -280,6 +280,63 @@ exact("dlls/win32u/vulkan.c", [
      '        libvulkan = SONAME_LIBVULKAN;\n'),
 ])
 
+# 4y. D3DMetal presents the Mac's GPU to most games as an AMD card and writes the driver version "30.0.15.1233" into
+#     the GPU's driver key (Control\Video\{gpu}\0000 links to Control\Class\{display}\0000). Unreal Engine 5 compares
+#     an AMD driver's version with its list of drivers known to have bugs ("<30.0.14011.2006") and stops every start
+#     with "The installed version of the AMD graphics driver has known issues in D3D12" (Chained Together, BIGFOOT).
+#     That value gets the AMD driver version Wine itself writes there (win32u/sysparams.c), the one games see under
+#     Proton on AMD cards, unless D3DM_VENDOR_ID makes D3DMetal present another vendor.
+exact("dlls/ntdll/unix/registry.c", [
+    ("#include <stdarg.h>\n#include <string.h>\n", "#include <stdarg.h>\n#include <stdlib.h>\n#include <string.h>\n"),
+    ("    if (name->Length > MAX_VALUE_LENGTH) return STATUS_INVALID_PARAMETER;\n"
+     "\n"
+     "    SERVER_START_REQ( set_key_value )\n",
+     "    if (name->Length > MAX_VALUE_LENGTH) return STATUS_INVALID_PARAMETER;\n"
+     "\n"
+     "    if (type == REG_SZ && name->Length == 13 * sizeof(WCHAR))  /* Tessera: see patch-wine.py 4y */\n"
+     "    {\n"
+     "        static const WCHAR driver_versionW[] = {'D','r','i','v','e','r','V','e','r','s','i','o','n'};\n"
+     "        static const WCHAR d3dmetal_versionW[] = {'3','0','.','0','.','1','5','.','1','2','3','3',0};\n"
+     "        static const WCHAR amd_versionW[] = {'3','5','.','0','.','2','1','0','2','5','.','1','0','2','4',0};\n"
+     "        const char *vendor = getenv( \"D3DM_VENDOR_ID\" );\n"
+     "\n"
+     "        if (!memcmp( name->Buffer, driver_versionW, sizeof(driver_versionW) ) &&\n"
+     "            count >= sizeof(d3dmetal_versionW) - sizeof(WCHAR) && count <= sizeof(d3dmetal_versionW) &&\n"
+     "            !memcmp( data, d3dmetal_versionW, sizeof(d3dmetal_versionW) - sizeof(WCHAR) ) &&\n"
+     "            (!vendor || !vendor[0] || strtoul( vendor, NULL, 0 ) == 0x1002))\n"
+     "        {\n"
+     "            data = amd_versionW;\n"
+     "            count = sizeof(amd_versionW);\n"
+     "        }\n"
+     "    }\n"
+     "\n"
+     "    SERVER_START_REQ( set_key_value )\n"),
+])
+
+# 4z. Chinese, Japanese and Korean text. Windows names its CJK fonts MS Gothic, SimSun, Microsoft YaHei, Malgun
+#     Gothic...; a Mac has none of them, so Wine used Arial and every CJK character showed as a box - also in Tahoma,
+#     MS Shell Dlg and the other UI fonts, whose fallback lists (FontLink\SystemLink) name those same fonts. Each name
+#     now stands for the Mac font of that language (Hiragino Sans/Mincho, Heiti/Songti SC and TC, Apple SD Gothic Neo;
+#     all part of macOS); the fallback lists then work too. wine.inf runs again in every Windows folder when it changes.
+CJK_SUBSTITUTES = [
+    ("MS Gothic", "Hiragino Sans W3"), ("MS PGothic", "Hiragino Sans W3"), ("MS UI Gothic", "Hiragino Sans W3"),
+    ("MS Mincho", "Hiragino Mincho ProN W3"), ("MS PMincho", "Hiragino Mincho ProN W3"),
+    ("Meiryo", "Hiragino Sans W3"), ("Meiryo UI", "Hiragino Sans W3"), ("Yu Gothic", "Hiragino Sans W3"),
+    ("Yu Gothic UI", "Hiragino Sans W3"), ("Yu Mincho", "Hiragino Mincho ProN W3"),
+    ("SimSun", "Songti SC"), ("NSimSun", "Songti SC"), ("SimHei", "Heiti SC"), ("KaiTi", "Songti SC"),
+    ("FangSong", "Songti SC"), ("Microsoft YaHei", "Heiti SC"), ("Microsoft YaHei UI", "Heiti SC"),
+    ("PMingLiU", "Songti TC"), ("MingLiU", "Songti TC"), ("Microsoft JhengHei", "Heiti TC"),
+    ("Microsoft JhengHei UI", "Heiti TC"),
+    ("Malgun Gothic", "Apple SD Gothic Neo"), ("Gulim", "Apple SD Gothic Neo"), ("GulimChe", "Apple SD Gothic Neo"),
+    ("Dotum", "Apple SD Gothic Neo"), ("DotumChe", "Apple SD Gothic Neo"), ("Batang", "Apple SD Gothic Neo"),
+    ("BatangChe", "Apple SD Gothic Neo"), ("Gungsuh", "Apple SD Gothic Neo"),
+]
+exact("loader/wine.inf.in", [
+    ('[Fonts]\nHKLM,%FontSubStr%,"Arial Baltic,186",,"Arial,186"\n',
+     "[Fonts]\n" + "".join(f'HKLM,%FontSubStr%,"{win}",,"{mac}"\n' for win, mac in CJK_SUBSTITUTES)
+     + 'HKLM,%FontSubStr%,"Arial Baltic,186",,"Arial,186"\n'),
+])
+
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
     if not re.search(r"CX_|[Cc]ross[Oo]ver|CROSSOVER|CXHTML", text):

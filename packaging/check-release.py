@@ -63,6 +63,8 @@ for root, dirs, files in os.walk(app):
                 ctx = context(data, i).replace(b"\x00", b"")
                 if word.lower() == b"crossover" and "/lib64/libav" in "/" + rel:
                     pass                              # FFmpeg: the audio "crossover" filter and its messages
+                elif word.lower() == b"crossover" and "/share/wine/gecko/" in "/" + rel and rel.endswith(".dic"):
+                    pass                              # Wine Gecko's spell-check word list: the English word
                 elif word == b"Crossover" and rel.endswith("/libgsttag-1.0.0.dylib") and (b"Metal" in ctx or b"Christian" in ctx):
                     pass                              # GStreamer: "Crossover" is a music genre in the ID3 genre list
                 elif word == b"Crossover" and "/share/wine/mono/" in "/" + rel and b"CrossoverHandle" in ctx:

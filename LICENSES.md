@@ -27,11 +27,19 @@ distributed (it is free).
 | **GLib**, proxy-libintl | 2.86.3, 0.5 | GNU LGPL 2.1 or later | `GLib - LGPL 2.1.txt`, `proxy-libintl - LGPL 2.1.txt` |
 | libffi, PCRE2, orc | — | MIT; BSD; BSD | `libffi - MIT.txt`, `PCRE2 - BSD.txt`, `orc - BSD.txt` |
 | **Steam bridge** (Valve Proton's lsteamclient, adapted for macOS) | — | BSD 3-clause; Steamworks SDK headers under Valve's SDK licence | `Steam bridge - Proton.txt`, `Steam bridge - Proton license.txt`, `Steam bridge - Steamworks SDK.txt` |
+| **Wine Gecko** (Wine's Internet Explorer engine) | 2.47.4 | Mozilla Public License 2.0 | `Wine Gecko - MPL 2.0.txt` |
+| **OpenAL Soft** (with PFFFT and HRTF data from MIT's KEMAR measurements) | 1.25.2 | GNU LGPL 2.0 or later; PFFFT BSD-style; KEMAR data free with credit | `OpenAL Soft - LGPL 2.0 and notices.txt` |
+
+**Not included:** Microsoft's Visual C++ runtimes 2005–2022 (with MFC), MFC 4.2 and parts of DirectX 9.0c (June 2010).
+Microsoft's licence does not allow Tessera to ship them. From 1.2.9 on, Tessera downloads Microsoft's own installers
+from Microsoft's servers on the player's Mac, checks each against a known SHA-256 checksum and installs them into each
+game's Windows folder; they are used under Microsoft's licence terms for those packages.
 
 Source code: the LGPL requires the exact sources of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib
 as built; they are attached to every release as `tessera-runtime-src-<version>.tar.xz` (with Tessera's changes and
-build scripts, the DXVK and MoltenVK sources and the Steam bridge), together with Wine Mono's source from 1.2.7 on.
+build scripts, the DXVK, MoltenVK and OpenAL Soft sources and the Steam bridge), together with Wine Mono's source from
+1.2.7 on and Wine Gecko's from 1.2.9 on.
 
 Which releases contain what: every release has Wine, D3DMetal, DXMT, MoltenVK, FreeType, GnuTLS, Nettle, GMP,
 FFmpeg and the Steam bridge; GStreamer, GLib, proxy-libintl, libffi, PCRE2 and orc from 1.2.0; Wine Mono, DXVK,
-MoltenVK for DXVK and the MinGW-w64 runtime from 1.2.7.
+MoltenVK for DXVK and the MinGW-w64 runtime from 1.2.7; Wine Gecko and OpenAL Soft from 1.2.9.

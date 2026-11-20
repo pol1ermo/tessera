@@ -19,6 +19,8 @@
 #   lib64/*.dylib, lib64/apple_gptk/{external,wine}       libraries and D3DMetal
 #   share/wine                                            wine.inf, NLS tables, fonts
 #   share/wine/mono/wine-mono-<version>                   Wine Mono (.NET Framework programs)
+#   share/wine/gecko/wine-gecko-<version>-<arch>          Wine Gecko (Internet Explorer engine)
+#   lib/tessera-redist/{x86_64,i386}/OpenAL32.dll         OpenAL Soft (build-openal.sh), copied into Windows folders
 set -euo pipefail
 RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
 WINE=$RT/wine-stage/opt/tessera
@@ -58,6 +60,29 @@ MONO_TAR=$HOME/.tessera/build/downloads/wine-mono-$MONO_VERSION-x86.tar.xz
 [ "$(shasum -a 256 "$MONO_TAR" | cut -d' ' -f1)" = "$MONO_SHA256" ] || { echo "Wine Mono download does not match"; exit 1; }
 mkdir -p "$OUT/share/wine/mono"
 tar -C "$OUT/share/wine/mono" -xJf "$MONO_TAR"
+
+step "Wine Gecko"
+# Wine's Internet Explorer engine (mshtml): game launchers and installers that show web pages, news or licence texts
+# in an embedded browser. Unpacked where Wine looks for a shared copy (share/wine/gecko/wine-gecko-<version>-<arch>),
+# so no Windows folder needs its own copy and Wine never offers to download it. Downloads checked by SHA-256.
+GECKO_VERSION=$(sed -n 's/^#define GECKO_VERSION "\(.*\)"/\1/p' "$RT/src/wine/dlls/appwiz.cpl/addons.c")
+[ "$GECKO_VERSION" = 2.47.4 ] || { echo "Wine expects Wine Gecko $GECKO_VERSION: update the Gecko checksums"; exit 1; }
+mkdir -p "$OUT/share/wine/gecko"
+for arch_sum in x86:2cfc8d5c948602e21eff8a78613e1826f2d033df9672cace87fed56e8310afb6 \
+                x86_64:fd88fc7e537d058d7a8abf0c1ebc90c574892a466de86706a26d254710a82814; do
+    arch=${arch_sum%%:*}
+    tarball=$HOME/.tessera/build/downloads/redist/wine-gecko-$GECKO_VERSION-$arch.tar.xz
+    [ -f "$tarball" ] || curl -fL --retry 3 -o "$tarball" "https://dl.winehq.org/wine/wine-gecko/$GECKO_VERSION/wine-gecko-$GECKO_VERSION-$arch.tar.xz"
+    [ "$(shasum -a 256 "$tarball" | cut -d' ' -f1)" = "${arch_sum#*:}" ] || { echo "Wine Gecko ($arch) download does not match"; exit 1; }
+    tar -C "$OUT/share/wine/gecko" -xJf "$tarball"
+done
+
+step "OpenAL Soft"
+# build-openal.sh: OpenAL32.dll for 64- and 32-bit games; the launcher copies them into each Windows folder
+[ -f "$RT/openal/x86_64/OpenAL32.dll" ] && [ -f "$RT/openal/i386/OpenAL32.dll" ] || { echo "run build-openal.sh first"; exit 1; }
+mkdir -p "$OUT/lib/tessera-redist"
+ditto "$RT/openal/x86_64" "$OUT/lib/tessera-redist/x86_64"
+ditto "$RT/openal/i386" "$OUT/lib/tessera-redist/i386"
 
 step "debug info"
 # Left in, Wine's own dbghelp trips over it and kills the process that touched it (Steam's helpers, every time)

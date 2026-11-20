@@ -61,12 +61,17 @@ cp "$DL/MoltenVK-1.4.2.tar.gz" "$STAGE/"
 # the DXVK backend: DXVK for macOS and its MoltenVK as in Wine's source archive (build-dxvk.sh patches them)
 cp -pR "$S/dxvk" "$STAGE/dxvk-macos"
 cp -pR "$S/moltenvk" "$STAGE/moltenvk-for-dxvk"
+# OpenAL Soft as released, with the one-line build fix build-openal.sh applies
+mkdir -p "$STAGE/openal-soft" "$STAGE/scripts/patches"
+cp "$HOME/.tessera/build/downloads/redist/openal-soft-1.25.2.tar.gz" "$STAGE/openal-soft/"
+cp "$HERE/patches/openal-soft-1.25.2-libcxx.patch" "$STAGE/openal-soft/"
+cp "$HERE/patches/"*.patch "$STAGE/scripts/patches/"
 
 echo "== Steam bridge"
 cp -pR "$HOME/.tessera/build/bridge/src" "$STAGE/steam-bridge/lsteamclient"
 cp -pR "$HERE/../bridge/steam-helper" "$STAGE/steam-bridge/steam-helper"
 
-cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-moltenvk.sh" "$HERE/build-dxvk.sh" "$HERE/build-wine.sh" "$HERE/assemble.sh" \
+cp "$HERE/patch-wine.py" "$HERE/build-deps.sh" "$HERE/build-gstreamer.sh" "$HERE/build-moltenvk.sh" "$HERE/build-dxvk.sh" "$HERE/build-wine.sh" "$HERE/build-openal.sh" "$HERE/assemble.sh" \
    "$HERE/../bridge/build-bridge.sh" "$HERE/../bridge/mac-adapt.py" "$STAGE/scripts/"
 cat > "$STAGE/README.txt" <<'EOF'
 Sources of the Windows runtime inside Tessera
@@ -87,10 +92,15 @@ Sources of the Windows runtime inside Tessera
                          only by games on DXVK. scripts/build-dxvk.sh builds both (with glslang 15.1.0 for DXVK's shaders).
   Wine Mono 10.4.1       shipped unchanged (share/wine/mono); its source is wine-mono-10.4.1-src.tar.xz, published next
                          to this archive (also at dl.winehq.org/wine/wine-mono/10.4.1/).
+  Wine Gecko 2.47.4      shipped unchanged (share/wine/gecko, MPL 2.0); its source is wine-gecko-2.47.4-src.tar.xz,
+                         published next to this archive (also at dl.winehq.org/wine/wine-gecko/2.47.4/).
+  openal-soft/           OpenAL Soft 1.25.2 as released (LGPL 2.0+) and the one-line build fix Tessera applies
+                         (openal-soft-1.25.2-libcxx.patch); scripts/build-openal.sh builds it for both Windows sides.
   steam-bridge/    lsteamclient from Valve's Proton, adapted for the macOS Steam client, and Tessera's steam.exe
 
 Build order (macOS on Apple silicon, Xcode, llvm-mingw for the Windows side): scripts/build-deps.sh,
-scripts/build-gstreamer.sh, scripts/build-wine.sh, scripts/build-bridge.sh, scripts/build-dxvk.sh, scripts/assemble.sh. The scripts expect these folders under
+scripts/build-gstreamer.sh, scripts/build-wine.sh, scripts/build-bridge.sh, scripts/build-dxvk.sh, scripts/build-openal.sh,
+scripts/assemble.sh. The scripts expect these folders under
 ~/.tessera/build (see the paths at the top of each script).
 EOF
 find "$STAGE" -name ".git" -prune -exec rm -rf {} +

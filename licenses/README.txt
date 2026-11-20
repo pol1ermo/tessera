@@ -30,7 +30,14 @@ Windows runtime (Contents/Resources/Runtime):
                          and 2C; the text included is the one of the newest toolkit package, 4.0 beta 3).
   Steam bridge ......... built from the lsteamclient sources of Valve's Proton (BSD licence) with the Steamworks
                          SDK headers Valve publishes with it (see the Steam bridge files).
-Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer, GLib, DXVK and both
-MoltenVK builds as built for this release, including Tessera's changes and build scripts, is published as a
-separate download next to each Tessera release, with the source of Wine Mono. You may modify these libraries
-and use your modified versions with Tessera.
+  Wine Gecko 2.47.4 .... Wine's Internet Explorer engine, made from Mozilla's code: Mozilla Public License 2.0.
+  OpenAL Soft 1.25.2 ... GNU LGPL 2.0 or later; contains PFFFT (BSD-style) and HRTF data made from the KEMAR
+                         measurements by Bill Gardner and Keith Martin, MIT Media Laboratory.
+Not included: Microsoft's Visual C++ runtimes (2005-2022, with MFC), MFC 4.2 and parts of DirectX 9.0c (June
+2010). Microsoft's licence does not allow Tessera to ship them; Tessera downloads Microsoft's own installers from
+Microsoft's servers on your Mac, checks them against known checksums and installs them into each game's Windows
+folder; they are used under Microsoft's licence terms for those packages.
+Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer, GLib, DXVK, OpenAL
+Soft and both MoltenVK builds as built for this release, including Tessera's changes and build scripts, is
+published as a separate download next to each Tessera release, with the sources of Wine Mono and Wine Gecko.
+You may modify these libraries and use your modified versions with Tessera.
