@@ -67,6 +67,7 @@ struct SteamView: View {
                     .foregroundStyle(.secondary)
 
                 statusCard
+                runtimesCard
 
                 if let busy = model.busy {
                     HStack(spacing: 10) { ProgressView().controlSize(.small); Text(busy) }
@@ -135,6 +136,37 @@ struct SteamView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
     }
+
+    /// Microsoft's runtimes: whether they are downloaded, the download's progress, or why it failed.
+    @ViewBuilder private var runtimesCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch model.runtimes {
+            case .checking:
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Checking Microsoft's runtimes…").font(.headline) }
+            case .ready:
+                Label("Microsoft's runtimes are downloaded", systemImage: "checkmark.circle.fill")
+                    .font(.headline).foregroundStyle(.green)
+            case .downloading(let received, let total):
+                Label("Downloading Microsoft's runtimes…", systemImage: "arrow.down.circle").font(.headline)
+                ProgressView(value: Double(received), total: Double(max(total, 1)))
+                Text("\(Self.megabytes(received)) of \(Self.megabytes(total)) MB from Microsoft")
+                    .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+            case .failed(let why):
+                Label("Microsoft's runtimes are not downloaded", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline).foregroundStyle(.orange)
+                Text("Reason: \(why). Games still start, with Wine's own versions of these files.")
+                    .foregroundStyle(.secondary)
+                Button("Try Again") { model.downloadRuntimes() }.buttonStyle(.borderedProminent)
+            }
+            Text("Visual C++ 2005–2022 with MFC, MFC 4.2 and DirectX 9.0c parts, \(Self.megabytes(microsoftPackagesTotalSize)) MB. Microsoft's licence doesn't let Tessera include them, so Tessera downloads them from Microsoft; each game's Windows folder gets them once, at its first start.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+    }
+
+    static func megabytes(_ bytes: Int64) -> Int { Int((Double(bytes) / 1_000_000).rounded()) }
 
     private var howItWorks: some View {
         VStack(alignment: .leading, spacing: 8) {

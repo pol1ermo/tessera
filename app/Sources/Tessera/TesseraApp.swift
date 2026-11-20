@@ -30,10 +30,52 @@ final class AppModel: ObservableObject {
     @Published var busy: String?
     @Published var error: String?
     @Published var needsAppManagement = false
+    @Published var runtimes: Runtimes = .checking
+
+    /// Microsoft's runtimes (MicrosoftPackages.swift) as the Steam page shows them
+    enum Runtimes: Equatable {
+        case checking
+        case ready
+        case downloading(received: Int64, total: Int64)
+        case failed(String)
+    }
 
     init() {
         refresh()
         Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate() }
+        // as soon as Tessera opens: what is missing comes from Microsoft now, not at a game's first start
+        downloadRuntimes()
+    }
+
+    private var runtimesBusy = false
+
+    /// Checks the downloads (sizes, then checksums) and fetches the missing ones from Microsoft, with progress.
+    func downloadRuntimes() {
+        guard !runtimesBusy else { return }
+        runtimesBusy = true
+        runtimes = .checking
+        Task.detached(priority: .utility) {
+            let missing = microsoftPackages.filter { !microsoftPackageIsDownloaded($0) }
+            let total = missing.reduce(Int64(0)) { $0 + $1.size }
+            var done: Int64 = 0
+            if !missing.isEmpty { await MainActor.run { self.runtimes = .downloading(received: 0, total: total) } }
+            for package in missing {
+                let before = done
+                let failure = downloadMicrosoftPackage(package) { received in
+                    Task { @MainActor in   // a late update never turns "ready" or "failed" back into "downloading"
+                        if case .downloading = self.runtimes {
+                            self.runtimes = .downloading(received: before + min(received, package.size), total: total)
+                        }
+                    }
+                }
+                if let failure {
+                    await MainActor.run { self.runtimes = .failed(failure); self.runtimesBusy = false }
+                    return
+                }
+                done += package.size
+            }
+            await MainActor.run { self.runtimes = .ready; self.runtimesBusy = false }
+        }
     }
 
     func refresh() {
