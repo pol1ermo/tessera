@@ -97,6 +97,7 @@ plist = subprocess.run(["defaults", "read", os.path.join(app, "Contents/Info.pli
                        capture_output=True, text=True).stdout.strip() or "11.0"
 def version_tuple(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+machos = []
 for root, dirs, files in os.walk(app):
     for n in files:
         path = os.path.join(root, n)
@@ -116,6 +117,37 @@ for root, dirs, files in os.walk(app):
         rel = os.path.relpath(path, app)
         if mins and max(version_tuple(m) for m in mins) > version_tuple(plist) and rel not in OWN_MINIMUM_EXCEPTIONS:
             problems.append(f"needs macOS {max(mins, key=version_tuple)} (the app states {plist}): {rel}")
+        machos.append((path, rel))
+
+# No program or library may call a system function that an older macOS does not have. The runtime is built on the
+# newest macOS for macOS 11 and later; a function newer than that is linked "weakly" and is a null pointer on an older
+# macOS, so calling it without a version check ends the program (signal 11). Up to 1.2.10 Wine's ntdll and GLib called
+# pipe2(), new in macOS 27: on macOS 14, 15 and 26 every Windows program stopped at start. Every weak import must be
+# listed here, with the reason it is safe; anything else fails the check.
+WEAK_OK = {
+    # on every macOS Tessera supports (14.0 and later)
+    "____chkstk_darwin", "___ulock_wait2", "_os_release", "_os_unfair_lock_lock", "_os_unfair_lock_trylock",
+    "_os_unfair_lock_unlock", "_voucher_adopt",
+    # the version check itself (what __builtin_available calls; the compiler's code tests it for null)
+    "__availability_version_check",
+    # ntdll.so (dlls/ntdll/unix/sync.c): only behind __builtin_available(macOS 14.4, *)
+    "_os_sync_wait_on_address", "_os_sync_wait_on_address_with_timeout", "_os_sync_wake_by_address_any",
+}
+WEAK_OK_FILES = (
+    # other makers' libraries, which check versions themselves: Apple's D3DMetal, MoltenVK, DXMT's Metal bridge
+    "Contents/Resources/Runtime/lib64/apple_gptk/", "Contents/Resources/Runtime/lib64/libMoltenVK.dylib",
+    "Contents/Resources/Runtime/lib64/dxvk/libMoltenVK.dylib", "Contents/Resources/Runtime/lib/dxmt/x86_64-unix/winemetal.so",
+    # Wine's OpenCL: OpenCL 1.0 functions Apple marks as deprecated, present in every macOS
+    "Contents/Resources/Runtime/lib/wine/x86_64-unix/opencl.so",
+)
+runtime_noise = re.compile(r"__Z|___cxa|__Unwind|___gxx|_objc_|__dyld|___dynamic_cast|_swift_|_\$s|___swift|__swift")
+for path, rel in machos:
+    if rel.startswith(WEAK_OK_FILES):
+        continue
+    out = subprocess.run(["nm", "-arch", "all", "-um", path], capture_output=True, text=True).stdout
+    for sym, lib in set(re.findall(r"weak external (\S+) \(from ([^)]+)\)", out)):
+        if sym not in WEAK_OK and not runtime_noise.match(sym):
+            problems.append(f"may be missing on an older macOS (weak import from {lib}): {sym} in {rel}")
 if mount:
     subprocess.run(["hdiutil", "detach", mount], stdout=subprocess.DEVNULL)
 

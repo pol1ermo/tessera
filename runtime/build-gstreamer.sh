@@ -48,6 +48,18 @@ ARCHIVE=$DL/gstreamer-mono-$GST_VERSION.tar.gz
 SRC=$BUILD/gstreamer-$GST_VERSION
 [ -d "$SRC" ] || tar -xzf "$ARCHIVE" -C "$BUILD"
 
+# glib without pipe2(): the function is new in macOS 27 and meson finds it in the macOS 27 SDK, but these libraries
+# are built to run on macOS 11 and later, where calling it is a call through a null pointer (g_unix_open_pipe, used
+# for every GMainContext: a game's first video or sound through GStreamer ended the game on macOS 14, 15 and 26).
+# Without the check glib uses pipe() and fcntl(), as it did on every macOS before 27.
+step "glib: no pipe2()"
+ls -d "$SRC"/subprojects/glib-2.*/ >/dev/null 2>&1 || (cd "$SRC" && $X86 "$TOOLS/bin/meson" subprojects download glib)
+GLIB_SRC=$(ls -d "$SRC"/subprojects/glib-2.*/ | head -1)
+if grep -q "^  'pipe2',$" "$GLIB_SRC/meson.build"; then
+    sed -i '' "/^  'pipe2',$/d" "$GLIB_SRC/meson.build"
+fi
+! grep -q "'pipe2'" "$GLIB_SRC/meson.build" || { echo "glib's meson.build still checks for pipe2"; exit 1; }
+
 # FFmpeg's pkg-config files name its neutral install prefix; point copies of them at the built libraries
 step "FFmpeg for gst-libav"
 mkdir -p "$BUILD/pc"

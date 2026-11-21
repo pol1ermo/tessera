@@ -336,6 +336,21 @@ exact("loader/wine.inf.in", [
      "[Fonts]\n" + "".join(f'HKLM,%FontSubStr%,"{win}",,"{mac}"\n' for win, mac in CJK_SUBSTITUTES)
      + 'HKLM,%FontSubStr%,"Arial Baltic,186",,"Arial,186"\n'),
 ])
+# 4ah. pipe2() is new in macOS 27. Wine's configure finds it in the macOS 27 SDK (HAVE_PIPE2) and ntdll calls it for
+#      the pipes to the Wine server in every process and thread; the runtime is built to run on older macOS too, where
+#      the function is not there, and calling it stopped every Windows program at start ("game exited with 11", a
+#      call through a null pointer) on every macOS before 27. Up to 1.2.10 no game started on macOS 14, 15 or 26.
+#      Wine on a Mac now always uses pipe() and FD_CLOEXEC, as it did before macOS 27 existed. (GLib had the same
+#      call: build-gstreamer.sh takes it out there. check-release.py now lists every such function.)
+NO_PIPE2_4AH = ('#include "config.h"\n\n'
+                '#ifdef __APPLE__\n'
+                '/* Tessera: pipe2() is new in macOS 27; this code also runs on older macOS, where calling it is a call through a\n'
+                ' * null pointer (every Windows program stopped at start). pipe() and FD_CLOEXEC work everywhere. */\n'
+                '#undef HAVE_PIPE2\n'
+                '#endif\n')
+exact("dlls/ntdll/unix/server.c", [('#include "config.h"\n', NO_PIPE2_4AH)])
+exact("dlls/ntdll/unix/process.c", [('#include "config.h"\n', NO_PIPE2_4AH)])
+
 
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
