@@ -83,6 +83,39 @@ if sig.returncode:
 lic = os.path.join(app, "Contents/Resources/Licenses")
 if not os.path.isdir(lic) or len(os.listdir(lic)) < 10:
     problems.append("licences missing")
+
+# Every program and library must run on the oldest macOS the app states (LSMinimumSystemVersion). 1.2.9 shipped Wine's
+# loader and the Steam bridge marked for macOS 27.2 (built without a deployment target); on any older macOS every
+# Windows program then died at start (exit code 11). Third parties' own minimums are listed and kept.
+OWN_MINIMUM_EXCEPTIONS = {
+    # Apple's D3DMetal (unmodified): Apple's shader container library needs macOS 15.4
+    "Contents/Resources/Runtime/lib64/apple_gptk/external/D3DMetal.framework/Versions/A/Resources/libdxccontainer.dylib",
+    # DXMT's Metal bridge is made for macOS 15
+    "Contents/Resources/Runtime/lib/dxmt/x86_64-unix/winemetal.so",
+}
+plist = subprocess.run(["defaults", "read", os.path.join(app, "Contents/Info.plist"), "LSMinimumSystemVersion"],
+                       capture_output=True, text=True).stdout.strip() or "11.0"
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+for root, dirs, files in os.walk(app):
+    for n in files:
+        path = os.path.join(root, n)
+        if os.path.islink(path) or not os.access(path, os.X_OK) and not n.endswith((".dylib", ".so")):
+            continue
+        with open(path, "rb") as f:
+            magic = f.read(4)
+        if magic not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xce\xfa\xed\xfe"):
+            continue
+        out = subprocess.run(["otool", "-arch", "all", "-l", path], capture_output=True, text=True).stdout
+        mins = []
+        for block in re.split(r"\nLoad command \d+\n", out):
+            if re.search(r"cmd LC_BUILD_VERSION\n", block) and re.search(r"\n\s*platform (1|MACOS)\n", block):
+                mins += re.findall(r"\n\s*minos (\d+\.\d+(?:\.\d+)?)", block)
+            elif re.search(r"cmd LC_VERSION_MIN_MACOSX\n", block):
+                mins += re.findall(r"\n\s*version (\d+\.\d+(?:\.\d+)?)", block)
+        rel = os.path.relpath(path, app)
+        if mins and max(version_tuple(m) for m in mins) > version_tuple(plist) and rel not in OWN_MINIMUM_EXCEPTIONS:
+            problems.append(f"needs macOS {max(mins, key=version_tuple)} (the app states {plist}): {rel}")
 if mount:
     subprocess.run(["hdiutil", "detach", mount], stdout=subprocess.DEVNULL)
 

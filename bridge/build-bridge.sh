@@ -67,8 +67,9 @@ build_pe i386 i686-windows lsteamclient.dll
 # Mac half: the generated C++ wrappers plus unixlib.cpp, linked against Wine's ntdll.so.
 echo "== Mac half: $(echo "$UNIX_SOURCES" | wc -l | tr -d ' ') files"
 mkdir -p "$OBJ/unix"
-# Apple's clang++ explicitly: llvm-mingw may come first in PATH
-CXX="$(xcrun -f clang++) -arch x86_64 -isysroot $SDK -m64"
+# Apple's clang++ explicitly: llvm-mingw may come first in PATH. The oldest macOS stated explicitly: without it the
+# library is marked for the SDK's macOS (27.2 in 1.2.9), and Macs on an older macOS could not load it.
+CXX="$(xcrun -f clang++) -arch x86_64 -isysroot $SDK -m64 -mmacosx-version-min=11.0"
 UFLAGS="-std=c++17 -DNOMINMAX -include cwchar -include cstring -include array -Wall -pipe -fcf-protection=none -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing
         -g -O2 -fPIC -ffile-prefix-map=$HOME/.tessera/build=/build -I$SRC -I$WB/include -I$W/include -D__WINESRC__ -DWINE_UNIX_LIB -U_FORTIFY_SOURCE
         -D_FORTIFY_SOURCE=0 -Wno-unused-variable -Wno-unused-function"
