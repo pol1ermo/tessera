@@ -135,18 +135,26 @@ Windows runtime (Contents/Resources/Runtime):
   libffi ............... MIT License.   PCRE2 ......... BSD licence.   orc ............ BSD licence.
   DXMT ................. MIT License. Copyright (c) 2023 Feifan He. Contains LLVM (Apache License 2.0 with LLVM
                          exceptions).
-  D3DMetal ............. Apple Game Porting Toolkit redistributables (D3DMetal 3.0), included unmodified and
-                         distributed free of charge for non-commercial use under Apple's licence (section 2A(iii)
-                         and 2C; the text included is the one of the newest toolkit package, 4.0 beta 3).
+  D3DMetal ............. Apple Game Porting Toolkit redistributables, two versions: 4.0 beta 3 (D3DMetal 4.0b3)
+                         and 3.0 (D3DMetal 3.0, used on macOS before 26.4 or when a game is set to it). Both
+                         included unmodified and distributed free of charge for non-commercial use under Apple's
+                         licence (section 2A(iii) and 2C; both packages come with the same licence text, the one
+                         included). 4.0's NVIDIA stand-ins (nvapi64.dll, nvngx-on-metalfx.dll) are used only by
+                         games set to "DLSS through MetalFX".
   Steam bridge ......... built from the lsteamclient sources of Valve's Proton (BSD licence) with the Steamworks
                          SDK headers Valve publishes with it (see the Steam bridge files).
   Wine Gecko 2.47.4 .... Wine's Internet Explorer engine, made from Mozilla's code: Mozilla Public License 2.0.
   OpenAL Soft 1.25.2 ... GNU LGPL 2.0 or later; contains PFFFT (BSD-style) and HRTF data made from the KEMAR
                          measurements by Bill Gardner and Keith Martin, MIT Media Laboratory.
-Not included: Microsoft's Visual C++ runtimes (2005-2022, with MFC), MFC 4.2 and parts of DirectX 9.0c (June
-2010). Microsoft's licence does not allow Tessera to ship them; Tessera downloads Microsoft's own installers from
-Microsoft's servers on your Mac, checks them against known checksums and installs them into each game's Windows
-folder; they are used under Microsoft's licence terms for those packages.
+Not included: Microsoft's Visual C++ runtimes (2005-2022, with MFC), MFC 4.2, parts of DirectX 9.0c (June 2010)
+and the Visual Basic 6 runtime. Microsoft's licence does not allow Tessera to ship them; Tessera downloads
+Microsoft's own installers from Microsoft's servers on your Mac (the Visual Basic 6 runtime: only its file from
+Microsoft's Windows XP SP3 package on the Windows Update servers), checks them against known checksums and installs
+them into each game's Windows folder; they are used under Microsoft's licence terms for those packages.
+Also not included: Valve's Windows Steam files (steamclient.dll, steamclient64.dll, GameOverlayRenderer64.dll,
+Steam.dll, SteamService.exe, iscriptevaluator.exe). The Mac Steam client does not carry them; Tessera downloads
+Valve's own package from Valve's update server on your Mac, checks it against its checksum and uses the files
+unmodified with your own Steam.
 Source code: the complete source of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer, GLib, DXVK, OpenAL
 Soft and both MoltenVK builds as built for this release, including Tessera's changes and build scripts, is
 published as a separate download next to each Tessera release, with the sources of Wine Mono and Wine Gecko.

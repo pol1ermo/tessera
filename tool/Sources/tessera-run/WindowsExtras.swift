@@ -4,15 +4,18 @@ import Foundation
 //
 // What a Windows PC has that Wine does not, put into every Windows folder once:
 //   * OpenAL Soft (OpenAL32.dll, open source, carried in the runtime: lib/tessera-redist)
-//   * Microsoft's Visual C++ runtimes 2005-2022 (with MFC 10-14), MFC 4.2 and the DirectX June 2010 parts Wine lacks
-//     (XACT 2.1-2.10 versions Wine does not implement, D3DCSX). Microsoft's licence does not let Tessera ship these,
-//     so they are downloaded from Microsoft on this Mac - once, checked against pinned SHA-256 - like CrossOver and
-//     winetricks do. Wine's own versions stay as the fallback (DLL overrides "n,b" in main.swift).
+//   * Microsoft's Visual C++ runtimes 2005-2022 (with MFC 10-14), MFC 4.2, the DirectX June 2010 parts Wine lacks
+//     (XACT 2.1-2.10 versions Wine does not implement, D3DCSX) and the Visual Basic 6 runtime (msvbvm60.dll).
+//     Microsoft's licence does not let Tessera ship these, so they are downloaded from Microsoft on this Mac - once,
+//     checked against pinned SHA-256, as winetricks does. Wine's own versions stay as the fallback
+//     (DLL overrides "n,b" in main.swift).
 // New Windows folders get all of it through the template (it is installed there once per runtime); folders made
 // earlier get it at their next start. Without a network the Microsoft part is skipped and tried again next start.
 
-/// Bump when the set or the way it is installed changes: every Windows folder then installs again.
-let windowsExtrasVersion = "1"
+/// Bump when the set or the way it is installed changes: every Windows folder then installs again (a folder that
+/// has an earlier set gets only what was added since, see installWindowsExtras).
+/// 1: Tessera 1.2.9. 2: + the Visual Basic 6 runtime.
+let windowsExtrasVersion = "2"
 
 // The packages themselves (URLs, checksums, sizes) and their download: MicrosoftPackages.swift, shared with the app.
 
@@ -69,12 +72,33 @@ func isWineStandIn(_ file: URL) -> Bool {
 func installWindowsExtras(_ prefix: URL, env baseEnv: [String: String], waitForServer: Bool) {
     let fm = FileManager.default
     let marker = prefix.appendingPathComponent(".tessera-windows-extras")
-    if (try? String(contentsOf: marker, encoding: .utf8)) == windowsExtrasVersion { return }
+    var installed = (try? String(contentsOf: marker, encoding: .utf8)) ?? ""
+    // The mark alone is not enough: up to 1.2.11 it was written even when every installer had failed (on macOS before
+    // 27 they all stopped at start), and such a folder never got Microsoft's runtimes. So Microsoft's files are looked
+    // for as well; a folder where they did not install is tried again once per Tessera runtime, not at every start.
+    let failedMark = prefix.appendingPathComponent(".tessera-windows-extras-failed")
+    if installed == windowsExtrasVersion, microsoftRuntimesPresent(prefix) { return }
+    if (try? String(contentsOf: failedMark, encoding: .utf8)) == runtimeStamp() { return }
+    if !installed.isEmpty, !microsoftRuntimesPresent(prefix) {
+        log("Windows extras: marked as installed, but Microsoft's runtimes are not there (set up by an earlier Tessera whose installers failed); installing them now")
+        installed = ""
+    }
     let started = Date()
     let windows = prefix.appendingPathComponent("drive_c/windows")
     // Windows' names: system32 holds the 64-bit DLLs, syswow64 the 32-bit ones
     let dir64 = windows.appendingPathComponent("system32"), dir32 = windows.appendingPathComponent("syswow64")
     guard fm.fileExists(atPath: dir64.path) else { return }
+    // a folder with set 1 (Tessera 1.2.9) has everything but the Visual Basic 6 runtime: add only that (a file copy)
+    if installed == "1" {
+        guard downloadMicrosoftPackages() else {
+            log("Windows extras: the Visual Basic 6 runtime is not downloaded yet (offline?); it follows at a later start")
+            return
+        }
+        installVisualBasic6(dir32)
+        try? windowsExtrasVersion.write(to: marker, atomically: true, encoding: .utf8)
+        log("Windows extras: Visual Basic 6 runtime added")
+        return
+    }
     var e = baseEnv
     e["WINEPREFIX"] = prefix.path
     e["WINEDEBUG"] = "-all"
@@ -90,7 +114,7 @@ func installWindowsExtras(_ prefix: URL, env baseEnv: [String: String], waitForS
         }
     }
 
-    log("Windows extras: Microsoft Visual C++ 2005-2022 (with MFC), MFC 4.2, DirectX 2010 parts, OpenAL (once per Windows folder)")
+    log("Windows extras: Microsoft Visual C++ 2005-2022 (with MFC), MFC 4.2, DirectX 2010 parts, Visual Basic 6, OpenAL (once per Windows folder)")
     guard downloadMicrosoftPackages() else {
         log("Windows extras: Microsoft's runtimes are not complete (offline?); OpenAL is in, the rest follows at a later start")
         return
@@ -129,6 +153,7 @@ func installWindowsExtras(_ prefix: URL, env baseEnv: [String: String], waitForS
         let target = dir32.appendingPathComponent(item.lowercased())
         if !fm.fileExists(atPath: target.path) { try? fm.copyItem(at: vc6files.appendingPathComponent(item), to: target) }
     }
+    installVisualBasic6(dir32)
 
     // DirectX June 2010: its cabinets, then the few DLLs Wine has no version of
     let dx = temp.appendingPathComponent("dx"), dxFiles = temp.appendingPathComponent("dxfiles")
@@ -158,6 +183,36 @@ func installWindowsExtras(_ prefix: URL, env baseEnv: [String: String], waitForS
     try? fm.removeItem(at: temp)
     if waitForServer { runProcess(runtime.server, ["-w"], env: e) }   // the registry is written when wineserver ends
 
-    try? windowsExtrasVersion.write(to: marker, atomically: true, encoding: .utf8)
-    log("Windows extras installed in \(Int(Date().timeIntervalSince(started))) s")
+    if microsoftRuntimesPresent(prefix) {
+        try? windowsExtrasVersion.write(to: marker, atomically: true, encoding: .utf8)
+        try? fm.removeItem(at: failedMark)
+        log("Windows extras installed in \(Int(Date().timeIntervalSince(started))) s")
+    } else {
+        try? runtimeStamp().write(to: failedMark, atomically: true, encoding: .utf8)
+        log("Windows extras: Microsoft's runtimes did not install (the lines above name the installers that failed); Wine's own versions are used, and Tessera tries again after its next update")
+    }
+}
+
+/// True when Microsoft's Visual C++ 2015-2022 package really is in the Windows folder: its MFC library is a file only
+/// that package brings (Wine has no version of it), and it is the last of the Visual C++ packages to be installed.
+func microsoftRuntimesPresent(_ prefix: URL) -> Bool {
+    FileManager.default.fileExists(atPath: prefix.appendingPathComponent("drive_c/windows/system32/mfc140.dll").path)
+}
+
+/// Names this runtime build (its wine.inf's time and size, which change with every runtime)
+func runtimeStamp() -> String {
+    let inf = runtime.root.appendingPathComponent("share/wine/wine.inf").path
+    let attrs = try? FileManager.default.attributesOfItem(atPath: inf)
+    return "\(Int((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)) \(attrs?[.size] ?? 0)"
+}
+
+/// The Visual Basic 6 runtime (32-bit; Windows keeps it in SysWOW64), from the cache (MicrosoftPackages.swift). A real
+/// one already in the folder stays; Wine has no version of its own.
+func installVisualBasic6(_ dir32: URL) {
+    let fm = FileManager.default
+    let source = redistCache.appendingPathComponent("msvbvm60.dll")
+    let present = ((try? fm.contentsOfDirectory(atPath: dir32.path)) ?? []).contains { $0.lowercased() == "msvbvm60.dll" }
+    if !present, fm.fileExists(atPath: source.path) {
+        try? fm.copyItem(at: source, to: dir32.appendingPathComponent("msvbvm60.dll"))
+    }
 }

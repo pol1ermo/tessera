@@ -3,16 +3,28 @@ import Foundation
 
 // MARK: - Microsoft's runtimes
 //
-// Microsoft's own installers that Tessera puts into every game's Windows folder: Visual C++ 2005-2022 (with MFC
-// 10-14), MFC 4.2 and DirectX 9.0c (June 2010). Microsoft's licence does not let Tessera ship them, so they come from
-// Microsoft's servers, checked against pinned SHA-256 (as winetricks 20260125 pins them; the 2015-2022 ones are
-// Microsoft's fixed per-version addresses behind aka.ms/vs/17/release, Visual C++ 14.44).
+// Microsoft's own files that Tessera puts into every game's Windows folder: Visual C++ 2005-2022 (with MFC 10-14),
+// MFC 4.2, DirectX 9.0c (June 2010) and the Visual Basic 6 runtime. Microsoft's licence does not let Tessera ship
+// them, so they come from Microsoft's servers, checked against pinned SHA-256 (as winetricks 20260125 pins them;
+// the 2015-2022 ones are Microsoft's fixed per-version addresses behind aka.ms/vs/17/release, Visual C++ 14.44).
 //
 // One file, used by both programs: the app (app/Sources/Tessera links to it) downloads them as soon as it opens and
 // shows whether they are there; the game launcher installs them into Windows folders and downloads them itself only
 // when the app has not.
 
-struct MicrosoftPackage { let file: String; let url: String; let sha256: String; let size: Int64 }
+struct MicrosoftPackage {
+    let file: String; let url: String; let sha256: String; let size: Int64
+    /// Set when only one file inside a bigger Microsoft package is needed: then only its bytes are downloaded
+    var piece: PackagePiece? = nil
+    /// What the download moves over the network
+    var downloadSize: Int64 { piece.map { Int64($0.range.count) } ?? size }
+}
+
+/// A file stored uncompressed in a big Microsoft cabinet package, fetched with an HTTP range request. `range` covers
+/// the cabinet's data blocks that hold it (each block: an 8-byte header, then its bytes); the first of them starts at
+/// `blockOffset` of the cabinet folder's data, and the file is `length` bytes at `offset` of that data. The file is
+/// itself a small cabinet (Microsoft's compressed ".dl_"), which macOS's tar unpacks. `sha256` is the cut-out file's.
+struct PackagePiece { let range: ClosedRange<Int64>; let blockOffset: Int64; let offset: Int64; let length: Int; let sha256: String }
 
 let microsoftPackages: [MicrosoftPackage] = [
     .init(file: "vcredist_2005_x86.exe", url: "https://download.microsoft.com/download/8/B/4/8B42259F-5D70-43F4-AC2E-4B208FD8D66A/vcredist_x86.EXE",
@@ -43,9 +55,29 @@ let microsoftPackages: [MicrosoftPackage] = [
           sha256: "c2eb91d9c4448d50e46a32fecbcc3b418706d002beab9b5f4981de552098cee7", size: 1_837_888),
     .init(file: "directx_Jun2010_redist.exe", url: "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
           sha256: "053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b", size: 100_275_120),
+    // The Visual Basic 6 runtime, part of every Windows since 2000. Microsoft no longer offers its own download of it;
+    // it is in Microsoft's Windows XP SP3 package on the Windows Update servers (winetricks' source for it; the whole
+    // package's SHA-256 is 62e524a552db9f6fd22d469010ea4d7e28ee06fa615a1c34362129f808916654), in the package's
+    // uncompressed part, so only its 608 KB are downloaded instead of the 332 MB package. Both checksums below were
+    // taken from that verified package. (Those servers answer over http only; the checksums make that safe.)
+    .init(file: "msvbvm60.dll", url: "http://www.download.windowsupdate.com/msdownload/update/software/dflt/2008/04/windowsxp-kb936929-sp3-x86-enu_c81472f7eeea2eca421e116cd4c03e2300ebfde4.exe",
+          sha256: "b18870f6f2471b0c3a2dafe28f74d3c4bb3fc4edf333e9f2a0909096c8453aed", size: 1_384_479,
+          piece: .init(range: 136_809_502...137_432_245, blockOffset: 136_609_792, offset: 136_639_004, length: 587_617,
+                       sha256: "4b377295f6a8c123762bfa1ff8fad2786ff3c15a140106038fc5bf2a5d4c53ac")),
 ]
 
-let microsoftPackagesTotalSize = microsoftPackages.reduce(Int64(0)) { $0 + $1.size }
+/// What all packages move over the network
+let microsoftPackagesTotalSize = microsoftPackages.reduce(Int64(0)) { $0 + $1.downloadSize }
+
+/// Microsoft .NET Framework 4.0 and 4.8 (full offline installers), only for games whose .NET launcher Wine Mono cannot
+/// run (DotNetFramework.swift). Not part of the set above: the game launcher downloads them when such a game needs them
+/// and the player agrees. Pinned as winetricks 20260125 pins them (dotnet40, dotnet48).
+let dotNetFrameworkPackages: [MicrosoftPackage] = [
+    .init(file: "dotNetFx40_Full_x86_x64.exe", url: "https://download.microsoft.com/download/9/5/A/95A9616B-7A37-4AF6-BC36-D6EA96C8DAAE/dotNetFx40_Full_x86_x64.exe",
+          sha256: "65e064258f2e418816b304f646ff9e87af101e4c9552ab064bb74d281c38659f", size: 50_449_456),
+    .init(file: "ndp48-x86-x64-allos-enu.exe", url: "https://download.visualstudio.microsoft.com/download/pr/7afca223-55d2-470a-8edc-6a1739ae3252/abd170b4b0ec15ad0222a809b761a036/ndp48-x86-x64-allos-enu.exe",
+          sha256: "95889d6de3f2070c07790ad6cf2000d33d9a1bdfc6a381725ab82ab1c314fd53", size: 72_721_568),
+]
 
 /// Where both programs keep the downloads (one copy for every Windows folder).
 let redistCache = FileManager.default.homeDirectoryForCurrentUser
@@ -57,6 +89,55 @@ func sha256Hex(_ file: URL) -> String? {
     var hasher = SHA256()
     while let chunk = try? handle.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
+/// Cuts a package piece out of its downloaded data blocks and unpacks it; on success `downloaded` holds the file
+/// `name` (nil), else the reason.
+private func unpackPiece(_ piece: PackagePiece, downloaded: URL, name: String) -> String? {
+    let fm = FileManager.default
+    // a server that ignored the range request sent the whole package: refuse it before reading it
+    let size = ((try? fm.attributesOfItem(atPath: downloaded.path))?[.size] as? NSNumber)?.int64Value ?? -1
+    guard size == Int64(piece.range.count), let data = try? Data(contentsOf: downloaded) else {
+        return "Microsoft's server sent the wrong part of the package for \(name)"
+    }
+    var cabinet = Data()
+    var at = 0, folderOffset = piece.blockOffset
+    let end = piece.offset + Int64(piece.length)
+    while at + 8 <= data.count, folderOffset < end {
+        let stored = Int(data[at + 4]) | Int(data[at + 5]) << 8, unpacked = Int(data[at + 6]) | Int(data[at + 7]) << 8
+        guard stored > 0, stored == unpacked, at + 8 + stored <= data.count else { return "unexpected data in the package for \(name)" }
+        let from = max(piece.offset, folderOffset), to = min(end, folderOffset + Int64(stored))
+        if from < to { cabinet.append(data[(at + 8 + Int(from - folderOffset))..<(at + 8 + Int(to - folderOffset))]) }
+        folderOffset += Int64(stored)
+        at += 8 + stored
+    }
+    guard cabinet.count == piece.length,
+          SHA256.hash(data: cabinet).map({ String(format: "%02x", $0) }).joined() == piece.sha256 else {
+        return "the part of the package holding \(name) did not match its checksum"
+    }
+    let work = downloaded.deletingLastPathComponent().appendingPathComponent(downloaded.lastPathComponent + ".unpack")
+    try? fm.removeItem(at: work)
+    defer { try? fm.removeItem(at: work) }
+    let out = work.appendingPathComponent("out")
+    do {
+        try fm.createDirectory(at: out, withIntermediateDirectories: true)
+        try cabinet.write(to: work.appendingPathComponent("piece.cab"))
+    } catch { return "could not unpack \(name): \(error.localizedDescription)" }
+    let tar = Process()   // macOS's tar is libarchive, which reads Microsoft's cabinet format
+    tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+    tar.arguments = ["-xf", work.appendingPathComponent("piece.cab").path, "-C", out.path]
+    tar.standardOutput = FileHandle.nullDevice
+    tar.standardError = FileHandle.nullDevice
+    do { try tar.run() } catch { return "could not start tar: \(error.localizedDescription)" }
+    tar.waitUntilExit()
+    guard tar.terminationStatus == 0,
+          let found = ((try? fm.contentsOfDirectory(atPath: out.path)) ?? []).first(where: { $0.lowercased() == name.lowercased() })
+    else { return "could not unpack \(name) (tar \(tar.terminationStatus))" }
+    try? fm.removeItem(at: downloaded)
+    do { try fm.moveItem(at: out.appendingPathComponent(found), to: downloaded) } catch {
+        return "could not unpack \(name): \(error.localizedDescription)"
+    }
+    return nil
 }
 
 /// True when the package is downloaded and matches its checksum (the size is compared first, which is instant).
@@ -77,7 +158,9 @@ func downloadMicrosoftPackage(_ package: MicrosoftPackage, progress: ((Int64) ->
     try? fm.removeItem(at: part)
     let curl = Process()
     curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-    curl.arguments = ["-fsSL", "--retry", "2", "--connect-timeout", "20", "--max-time", "1800", "-o", part.path, package.url]
+    var arguments = ["-fsSL", "--retry", "2", "--connect-timeout", "20", "--max-time", "1800", "-o", part.path]
+    if let piece = package.piece { arguments += ["-r", "\(piece.range.lowerBound)-\(piece.range.upperBound)"] }
+    curl.arguments = arguments + [package.url]
     curl.standardOutput = FileHandle.nullDevice
     curl.standardError = FileHandle.nullDevice
     do { try curl.run() } catch { return "could not start curl: \(error.localizedDescription)" }
@@ -91,11 +174,15 @@ func downloadMicrosoftPackage(_ package: MicrosoftPackage, progress: ((Int64) ->
         return curl.terminationStatus == 6 || curl.terminationStatus == 7 || curl.terminationStatus == 28
             ? "Microsoft's server could not be reached (no internet?)" : "the download of \(package.file) failed (curl \(curl.terminationStatus))"
     }
+    if let piece = package.piece, let failure = unpackPiece(piece, downloaded: part, name: package.file) {
+        try? fm.removeItem(at: part)
+        return failure
+    }
     guard sha256Hex(part) == package.sha256 else {
         try? fm.removeItem(at: part)
         return "\(package.file) did not match its checksum"
     }
-    progress?(package.size)
+    progress?(package.downloadSize)
     try? fm.removeItem(at: file)
     do { try fm.moveItem(at: part, to: file) } catch { return "could not keep \(package.file): \(error.localizedDescription)" }
     return nil

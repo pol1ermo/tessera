@@ -195,12 +195,13 @@ enum GameLibrary {
 /// Per-game options, stored as NAME=value lines that Tessera's launcher applies when Steam starts the game.
 struct GameSettings: Equatable {
     enum Graphics: String, CaseIterable, Identifiable {
-        case automatic, d3dmetal, dxmt, dxvk, wined3d
+        case automatic, d3dmetal, d3dmetal3, dxmt, dxvk, wined3d
         var id: String { rawValue }
         var label: String {
             switch self {
             case .automatic: return "Automatic (recommended)"
             case .d3dmetal: return "D3DMetal"
+            case .d3dmetal3: return "D3DMetal 3.0"
             case .dxmt: return "DXMT"
             case .dxvk: return "DXVK (Vulkan)"
             case .wined3d: return "WineD3D (OpenGL)"
@@ -209,7 +210,8 @@ struct GameSettings: Equatable {
         var detail: String {
             switch self {
             case .automatic: return "D3DMetal for most games; DXMT for GameMaker games, BeamNG, Konami's Metal Gear collections and 32-bit DirectX 11 games (D3DMetal is 64-bit only); DXVK for Skyrim Special Edition."
-            case .d3dmetal: return "Apple's DirectX 11/12 translation. Fastest for most games."
+            case .d3dmetal: return "Apple's DirectX 11/12 translation. Fastest for most games. D3DMetal 4.0 beta on macOS 26.4 and later, 3.0 on an older macOS."
+            case .d3dmetal3: return "Apple's previous D3DMetal. Try it if a game misbehaves with D3DMetal 4.0, which is a beta."
             case .dxmt: return "Open-source DirectX 11 translation to Metal. Try it if a DirectX 11 game misbehaves."
             case .dxvk: return "DirectX 9-11 translated to Vulkan (DXVK for macOS, on its own MoltenVK). For games that crash with D3DMetal and DXMT."
             case .wined3d: return "Wine's own DirectX 9-11 translation. For older games."
@@ -221,12 +223,14 @@ struct GameSettings: Equatable {
     var showHUD = false
     var metalFX = false
     var raytracing = false
+    var dotNet = false          // Microsoft .NET Framework 4.8 in this game's Windows folder (DotNetFramework.swift)
     var steamOverlay = true
     var fullResolution = true   // the launcher's default too: a game's desktop is the screen's largest real mode
     var extra: [(String, String)] = []
 
     static func == (a: GameSettings, b: GameSettings) -> Bool {
         a.graphics == b.graphics && a.showHUD == b.showHUD && a.metalFX == b.metalFX && a.raytracing == b.raytracing
+            && a.dotNet == b.dotNet
             && a.steamOverlay == b.steamOverlay && a.fullResolution == b.fullResolution
             && a.extra.map { "\($0.0)=\($0.1)" } == b.extra.map { "\($0.0)=\($0.1)" }
     }
@@ -243,6 +247,7 @@ struct GameSettings: Equatable {
             case "MTL_HUD_ENABLED": s.showHUD = v == "1"
             case "D3DM_ENABLE_METALFX": s.metalFX = v == "1"
             case "D3DM_SUPPORT_DXR": s.raytracing = v == "1"
+            case "TESSERA_DOTNET" where v == "1": s.dotNet = true
             case "TESSERA_STEAM_OVERLAY": s.steamOverlay = v != "0"
             case "TESSERA_FULL_RESOLUTION": s.fullResolution = v != "0"
             default: s.extra.append((k, v))
@@ -257,6 +262,7 @@ struct GameSettings: Equatable {
         if showHUD { lines.append("MTL_HUD_ENABLED=1") }
         if metalFX { lines.append("D3DM_ENABLE_METALFX=1") }
         if raytracing { lines.append("D3DM_SUPPORT_DXR=1") }
+        if dotNet { lines.append("TESSERA_DOTNET=1") }
         if !steamOverlay { lines.append("TESSERA_STEAM_OVERLAY=0") }
         if !fullResolution { lines.append("TESSERA_FULL_RESOLUTION=0") }
         for (k, v) in extra where !k.isEmpty { lines.append("\(k)=\(v)") }

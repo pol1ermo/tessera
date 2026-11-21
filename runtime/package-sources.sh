@@ -85,7 +85,8 @@ Sources of the Windows runtime inside Tessera
   ffmpeg-7.1.1.tar.xz  FFmpeg 7.1.1, official release, built as LGPL (see scripts/build-deps.sh)
   gstreamer/       GStreamer 1.28.9 (LGPL 2.1+) as released, plus the sources its build fetched: glib 2.86.3
                    (LGPL 2.1+), proxy-libintl 0.5 (LGPL 2.1+), libffi (MIT), pcre2 10.47 (BSD), orc 0.4.42 (BSD).
-                   Built by scripts/build-gstreamer.sh.
+                   Built by scripts/build-gstreamer.sh, which takes the pipe2() check out of glib's meson.build
+                   (the function is new in macOS 27; the libraries also run on older macOS).
   MoltenVK-1.4.2.tar.gz  MoltenVK 1.4.2 as released (Apache 2.0); scripts/build-moltenvk.sh applies Tessera's change.
   dxvk-macos/            DXVK 1.10.3 for macOS (zlib), from the same source archive as Wine.
   moltenvk-for-dxvk/     the MoltenVK 1.2.10 fork DXVK for macOS is made for, with its SPIRV-Cross (Apache 2.0); used

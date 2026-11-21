@@ -48,6 +48,9 @@ enum SteamSetup {
         let fm = FileManager.default
         if Bundle.main.bundlePath.contains("/AppTranslocation/") { return .notInApplications }
         guard fm.fileExists(atPath: Paths.steamApp.path) else { return .steamMissing }
+        if steamAppIsIncomplete {
+            return .needsRepair("Steam.app is missing its Info.plist (removing Tessera was stopped half-way by macOS); Repair puts Valve's file back")
+        }
         let env = steamEnvironment()
         guard let insert = env[insertKey], insert.contains(Paths.steamLibrary.path) else { return .notInstalled }
         if !fm.fileExists(atPath: Paths.steamLibrary.path) { return .needsRepair("Tessera's Steam library is missing") }
@@ -210,6 +213,7 @@ enum SteamSetup {
         // Back up Valve's originals whenever Steam.app is Valve's own: a backup from an earlier setup may be older than
         // the Steam launcher now (Steam updates it), and "Remove from Steam" would put old files back. Steam.app
         // already set up keeps its backup (a second install must not back up our own changes).
+        if steamAppIsIncomplete { try restoreOriginals() }
         let steamIsOriginal = steamEnvironment()[insertKey] == nil
         if steamIsOriginal { try? fm.removeItem(at: backupDir) }
         if !fm.fileExists(atPath: backupDir.appendingPathComponent("Info.plist").path) {
@@ -248,24 +252,69 @@ enum SteamSetup {
     static func uninstall() throws {
         guard quitSteam() else { throw SetupError.steamRunning }
         let fm = FileManager.default
-        let contents = Paths.steamApp.appendingPathComponent("Contents")
-        // Steam may have updated its launcher since: then it is Valve's original already and the old backup is stale
-        if steamEnvironment()[insertKey] != nil {
-            guard fm.fileExists(atPath: backupDir.appendingPathComponent("Info.plist").path) else {
-                throw SetupError.failed("No backup of Steam's original files was found")
-            }
-            for (name, dst) in [("Info.plist", "Info.plist"), ("_CodeSignature", "_CodeSignature"), ("steam_osx", "MacOS/steam_osx")] {
-                let target = contents.appendingPathComponent(dst)
-                try? fm.removeItem(at: target)
-                try fm.copyItem(at: backupDir.appendingPathComponent(name), to: target)
-            }
+        // Steam may have updated its launcher since: then it is Valve's original already and the old backup is stale.
+        // A Steam.app without its Info.plist is not that case: the backup is what makes it whole again.
+        if steamEnvironment()[insertKey] != nil || steamAppIsIncomplete {
+            try restoreOriginals()
             registerWithLaunchServices()
         }
         try? fm.removeItem(at: backupDir)
         try? CompatMappings.removeTool([toolName] + legacyToolNames)
+        // the copies of Valve's Windows Steam files the game launcher put into Steam's legacycompat folder
+        // (ValveFiles.swift); a file of another size there is someone else's and stays
+        let legacy = Paths.steamClient.deletingLastPathComponent().appendingPathComponent("legacycompat")
+        for file in valveFiles {
+            let copy = legacy.appendingPathComponent(file.name), own = valveFilesFolder.appendingPathComponent(file.name)
+            if let a = (try? fm.attributesOfItem(atPath: copy.path))?[.size] as? NSNumber,
+               let b = (try? fm.attributesOfItem(atPath: own.path))?[.size] as? NSNumber, a == b {
+                try? fm.removeItem(at: copy)
+            }
+        }
         // Steam no longer loads them; per-game settings and logs stay in case Tessera is set up again
         for item in [Paths.steamLibrary.deletingLastPathComponent(), Paths.compatRoot, Paths.runtimeLink, Paths.prefixTemplates] {
             try? fm.removeItem(at: item)
+        }
+    }
+
+    /// Steam.app without its Info.plist: Tessera up to 1.2.11 deleted each of Valve's files before writing the original
+    /// back, and where macOS refused the write (App Management), Steam.app was left without it and could not open.
+    static var steamAppIsIncomplete: Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: Paths.steamApp.appendingPathComponent("Contents/MacOS").path)
+            && !fm.fileExists(atPath: Paths.steamApp.appendingPathComponent("Contents/Info.plist").path)
+    }
+
+    /// Puts Valve's Info.plist, signature and binary back. Every file is first copied next to its place; only when
+    /// all three copies are there are they swapped in. If macOS refuses (App Management), Steam.app stays exactly as
+    /// it was, the backup stays, and the person is told which switch to turn on.
+    static func restoreOriginals() throws {
+        let fm = FileManager.default
+        let contents = Paths.steamApp.appendingPathComponent("Contents")
+        guard fm.fileExists(atPath: backupDir.appendingPathComponent("Info.plist").path) else {
+            throw SetupError.failed(steamAppIsIncomplete
+                ? "Steam.app is incomplete (its Info.plist is missing) and there is no backup of Valve's files. Install Steam again from store.steampowered.com/about, then set up Tessera."
+                : "No backup of Steam's original files was found")
+        }
+        var staged: [(copy: URL, target: URL)] = []
+        do {
+            for (name, dst) in [("Info.plist", "Info.plist"), ("_CodeSignature", "_CodeSignature"), ("steam_osx", "MacOS/steam_osx")] {
+                let target = contents.appendingPathComponent(dst)
+                let copy = target.deletingLastPathComponent().appendingPathComponent(".tessera-restore-\(target.lastPathComponent)")
+                try? fm.removeItem(at: copy)
+                try fm.copyItem(at: backupDir.appendingPathComponent(name), to: copy)
+                staged.append((copy, target))
+            }
+            for (copy, target) in staged {
+                if fm.fileExists(atPath: target.path) {
+                    _ = try fm.replaceItemAt(target, withItemAt: copy)
+                } else {
+                    try fm.moveItem(at: copy, to: target)
+                }
+            }
+        } catch let error as NSError {
+            for (copy, _) in staged { try? fm.removeItem(at: copy) }
+            if isPermissionError(error) { throw SetupError.appManagement }
+            throw error
         }
     }
 

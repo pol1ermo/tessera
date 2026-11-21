@@ -137,28 +137,28 @@ struct SteamView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
     }
 
-    /// Microsoft's runtimes: whether they are downloaded, the download's progress, or why it failed.
+    /// Microsoft's runtimes and Valve's Steam files: whether they are downloaded, the download's progress, or why it failed.
     @ViewBuilder private var runtimesCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch model.runtimes {
             case .checking:
-                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Checking Microsoft's runtimes…").font(.headline) }
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Checking Microsoft's runtimes and Valve's Steam files…").font(.headline) }
             case .ready:
-                Label("Microsoft's runtimes are downloaded", systemImage: "checkmark.circle.fill")
+                Label("Microsoft's runtimes and Valve's Steam files are downloaded", systemImage: "checkmark.circle.fill")
                     .font(.headline).foregroundStyle(.green)
             case .downloading(let received, let total):
-                Label("Downloading Microsoft's runtimes…", systemImage: "arrow.down.circle").font(.headline)
+                Label("Downloading Microsoft's runtimes and Valve's Steam files…", systemImage: "arrow.down.circle").font(.headline)
                 ProgressView(value: Double(received), total: Double(max(total, 1)))
-                Text("\(Self.megabytes(received)) of \(Self.megabytes(total)) MB from Microsoft")
+                Text("\(Self.megabytes(received)) of \(Self.megabytes(total)) MB from Microsoft and Valve")
                     .font(.callout).monospacedDigit().foregroundStyle(.secondary)
             case .failed(let why):
-                Label("Microsoft's runtimes are not downloaded", systemImage: "exclamationmark.triangle.fill")
+                Label("Microsoft's runtimes or Valve's Steam files are not downloaded", systemImage: "exclamationmark.triangle.fill")
                     .font(.headline).foregroundStyle(.orange)
-                Text("Reason: \(why). Games still start, with Wine's own versions of these files.")
+                Text("Reason: \(why). Tessera tries again when a game starts; until Valve's files are there, some games do not start.")
                     .foregroundStyle(.secondary)
                 Button("Try Again") { model.downloadRuntimes() }.buttonStyle(.borderedProminent)
             }
-            Text("Visual C++ 2005–2022 with MFC, MFC 4.2 and DirectX 9.0c parts, \(Self.megabytes(microsoftPackagesTotalSize)) MB. Microsoft's licence doesn't let Tessera include them, so Tessera downloads them from Microsoft; each game's Windows folder gets them once, at its first start.")
+            Text("Visual C++ 2005–2022 with MFC, MFC 4.2, DirectX 9.0c parts and Visual Basic 6, \(Self.megabytes(microsoftPackagesTotalSize)) MB. Microsoft's licence doesn't let Tessera include them, so Tessera downloads them from Microsoft; each game's Windows folder gets them once, at its first start. Valve's Steam files for Windows games (steamclient and Steam's script runner, \(Self.megabytes(valveDownloadSize)) MB) come the same way from Valve's update server: the Mac Steam client does not include them.")
                 .font(.callout).foregroundStyle(.secondary)
         }
         .padding(18)
@@ -229,8 +229,18 @@ struct GameView: View {
                 Toggle("Show the Metal performance overlay", isOn: $settings.showHUD)
                 Toggle("Ray tracing (DirectX Raytracing, D3DMetal)", isOn: $settings.raytracing)
                     .disabled(settings.graphics == .dxmt || settings.graphics == .dxvk || settings.graphics == .wined3d)
+                Toggle("DLSS through MetalFX (D3DMetal 4)", isOn: $settings.metalFX)
+                    .disabled(settings.graphics == .dxmt || settings.graphics == .dxvk || settings.graphics == .wined3d
+                              || settings.graphics == .d3dmetal3)
+                Text("For games with NVIDIA DLSS: the game sees an NVIDIA graphics card, and the DLSS upscaling chosen in its graphics settings runs on Apple's MetalFX.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Toggle("Resolutions up to \(Self.screenSizes.full)", isOn: $settings.fullResolution)
                 Text("On (the default), a game that may draw through D3DMetal's DirectX 10–12 starts on the screen's full \(Self.screenSizes.full), because D3DMetal offers sizes only up to the desktop: its menu then lists every size, sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller. 32-bit games, games drawing through Direct3D 9, OpenGL or Vulkan, games on DXMT, DXVK or WineD3D and Chromium-based games (RPG Maker MV/MZ) list every size on the Mac desktop size (\(Self.screenSizes.desktop)) and keep it. Off, every game uses the Mac desktop size.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            SwiftUI.Section("Windows") {
+                Toggle("Microsoft .NET Framework 4.8", isOn: $settings.dotNet)
+                Text("For .NET launchers that Wine's own .NET cannot run (Assetto Corsa's gets it automatically). Installed into this game's Windows folder once, after you agree: 123 MB from Microsoft, about five minutes.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             SwiftUI.Section("Steam") {

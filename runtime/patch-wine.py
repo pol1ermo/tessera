@@ -132,8 +132,9 @@ exact("dlls/ntdll/loader.c", [('        return L"lsteamclient.dll";\n    return 
     ('done:\n    if (nts == STATUS_SUCCESS)\n        TRACE("Loaded module %s at %p\\n", debugstr_us(&nt_name), (*pwm)->ldr.DllBase);\n', 'done:\n    if (nts == STATUS_SUCCESS && libname != requested) steamclient_report_steam_path( *pwm );\n    if (nts == STATUS_SUCCESS)\n        TRACE("Loaded module %s at %p\\n", debugstr_us(&nt_name), (*pwm)->ldr.DllBase);\n')])
 
 # 4j. a game's steamclient(64).dll is Valve's real file, mapped but never run (Steam's DRM wrapper checks it)
+#     (a stand-in copy of the bridge in its place is the bridge itself: never linked to itself)
 exact("dlls/ntdll/loader.c", [('static BOOL process_detaching = FALSE;  /* set on process detach to avoid deadlocks with thread detach */\n', 'static BOOL process_detaching = FALSE;  /* set on process detach to avoid deadlocks with thread detach */\nstatic HMODULE steamclient_shadow, steamclient_bridge;  /* Tessera: see load_steamclient_pair */\nstatic BOOL steamclient_loading;\n'),
-    ('    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(path) ))) return;\n    memcpy( buffer, path, sizeof(path) );\n    RtlInitUnicodeString( &wm->ldr.FullDllName, buffer );\n}\n', '    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(path) ))) return;\n    memcpy( buffer, path, sizeof(path) );\n    RtlInitUnicodeString( &wm->ldr.FullDllName, buffer );\n}\n\n/* Tessera: Steam\'s DRM wrapper in older games loads steamclient.dll, reads that file from Steam\'s folder, compares it\n * with the module in memory and wants the game\'s Steam interfaces to lie inside it. So a game\'s steamclient(64).dll is\n * Valve\'s real file, mapped as an image whose code never runs (as with DONT_RESOLVE_DLL_REFERENCES), and every function\n * looked up in it comes from the bridge, lsteamclient.dll, loaded beside it; the bridge puts the interfaces into that\n * module\'s .data, as Valve\'s bridge code expects. Without Valve\'s file the bridge itself stands in, as before. */\nstatic NTSTATUS load_steamclient_pair( const WCHAR *load_path, const WCHAR *libname, DWORD flags,\n                                       WINE_MODREF **pwm, BOOL system )\n{\n#ifdef _WIN64\n    static const WCHAR steam_file[] = L"C:\\\\Program Files (x86)\\\\Steam\\\\steamclient64.dll";\n#else\n    static const WCHAR steam_file[] = L"C:\\\\Program Files (x86)\\\\Steam\\\\steamclient.dll";\n#endif\n    const WCHAR *file = (wcschr( libname, \'\\\\\' ) || wcschr( libname, \'/\' )) ? libname : steam_file;\n    WINE_MODREF *bridge = NULL, *shadow = NULL;\n    NTSTATUS nts;\n\n    steamclient_loading = TRUE;\n    nts = load_dll( load_path, L"lsteamclient.dll", 0, &bridge, system );\n    if (!nts) nts = process_attach( bridge->ldr.DdagNode, NULL );\n    if (!nts)\n    {\n        if (!load_dll( load_path, file, flags | DONT_RESOLVE_DLL_REFERENCES, &shadow, system ))\n        {\n            steamclient_shadow = shadow->ldr.DllBase;\n            steamclient_bridge = bridge->ldr.DllBase;\n            TRACE( "%s mapped for its file, its functions come from the bridge\\n", debugstr_w(file) );\n            *pwm = shadow;\n        }\n        else\n        {\n            steamclient_report_steam_path( bridge );\n            *pwm = bridge;\n        }\n    }\n    steamclient_loading = FALSE;\n    return nts;\n}\n'),
+    ('    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(path) ))) return;\n    memcpy( buffer, path, sizeof(path) );\n    RtlInitUnicodeString( &wm->ldr.FullDllName, buffer );\n}\n', '    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(path) ))) return;\n    memcpy( buffer, path, sizeof(path) );\n    RtlInitUnicodeString( &wm->ldr.FullDllName, buffer );\n}\n\n/* Tessera: Steam\'s DRM wrapper in older games loads steamclient.dll, reads that file from Steam\'s folder, compares it\n * with the module in memory and wants the game\'s Steam interfaces to lie inside it. So a game\'s steamclient(64).dll is\n * Valve\'s real file, mapped as an image whose code never runs (as with DONT_RESOLVE_DLL_REFERENCES), and every function\n * looked up in it comes from the bridge, lsteamclient.dll, loaded beside it; the bridge puts the interfaces into that\n * module\'s .data, as Valve\'s bridge code expects. Without Valve\'s file the bridge itself stands in, as before. */\nstatic NTSTATUS load_steamclient_pair( const WCHAR *load_path, const WCHAR *libname, DWORD flags,\n                                       WINE_MODREF **pwm, BOOL system )\n{\n#ifdef _WIN64\n    static const WCHAR steam_file[] = L"C:\\\\Program Files (x86)\\\\Steam\\\\steamclient64.dll";\n#else\n    static const WCHAR steam_file[] = L"C:\\\\Program Files (x86)\\\\Steam\\\\steamclient.dll";\n#endif\n    const WCHAR *file = (wcschr( libname, \'\\\\\' ) || wcschr( libname, \'/\' )) ? libname : steam_file;\n    WINE_MODREF *bridge = NULL, *shadow = NULL;\n    NTSTATUS nts;\n\n    steamclient_loading = TRUE;\n    nts = load_dll( load_path, L"lsteamclient.dll", 0, &bridge, system );\n    if (!nts) nts = process_attach( bridge->ldr.DdagNode, NULL );\n    if (!nts)\n    {\n        /* A Steam folder without the file from Valve holds the bridge itself as a stand-in. The loader then finds\n         * the bridge again: linking its functions to themselves made every Steam call loop forever (games stopped at\n         * start without a window), so that case is the bridge standing in, like a missing file. */\n        if (!load_dll( load_path, file, flags | DONT_RESOLVE_DLL_REFERENCES, &shadow, system ) && shadow != bridge)\n        {\n            steamclient_shadow = shadow->ldr.DllBase;\n            steamclient_bridge = bridge->ldr.DllBase;\n            TRACE( "%s mapped for its file, its functions come from the bridge\\n", debugstr_w(file) );\n            *pwm = shadow;\n        }\n        else\n        {\n            steamclient_report_steam_path( bridge );\n            *pwm = bridge;\n        }\n    }\n    steamclient_loading = FALSE;\n    return nts;\n}\n'),
     ('    TRACE( "looking for %s in %s\\n", debugstr_w(libname), debugstr_w(load_path) );\n    libname = steamclient_redirect( libname );\n', '    TRACE( "looking for %s in %s\\n", debugstr_w(libname), debugstr_w(load_path) );\n    if (!steamclient_loading && !steamclient_shadow && steamclient_redirect( libname ) != libname)\n    {\n        if (imports_fixup_done) return load_steamclient_pair( load_path, libname, flags, pwm, system );\n        libname = steamclient_redirect( libname );  /* a static import at start-up gets the bridge itself */\n    }\n'),
     ('    status = find_dll_file( load_path, steamclient_redirect( dllname ? dllname : name->Buffer ),\n', '    status = find_dll_file( load_path, steamclient_shadow ? (dllname ? dllname : name->Buffer)\n                                       : steamclient_redirect( dllname ? dllname : name->Buffer ),\n'),
     ('static void free_modref( WINE_MODREF *wm )\n{\n    SINGLE_LIST_ENTRY *entry;\n    LDR_DEPENDENCY *dep;\n\n', 'static void free_modref( WINE_MODREF *wm )\n{\n    SINGLE_LIST_ENTRY *entry;\n    LDR_DEPENDENCY *dep;\n\n    if (wm->ldr.DllBase == steamclient_shadow) steamclient_shadow = NULL;  /* Tessera */\n')])
@@ -336,6 +337,492 @@ exact("loader/wine.inf.in", [
      "[Fonts]\n" + "".join(f'HKLM,%FontSubStr%,"{win}",,"{mac}"\n' for win, mac in CJK_SUBSTITUTES)
      + 'HKLM,%FontSubStr%,"Arial Baltic,186",,"Arial,186"\n'),
 ])
+
+# 4aa. Decoded video from Wine's GStreamer media source came in plain memory buffers; Windows' decoders deliver 2D
+#      buffers, and games that read a frame's lines through IMF2DBuffer / IMF2DBuffer2 got nothing (Capcom Arcade 2nd
+#      Stadium: black movies and menus while the sound played). Raw video samples now go into a 2D buffer made from the
+#      stream's media type (MFCreateMediaBufferFromMediaType); anything else keeps a plain buffer.
+OLD_SEND_4AA = 'static HRESULT media_stream_send_sample(struct media_stream *stream, const struct wg_parser_buffer *wg_buffer, IUnknown *token)\n{\n    IMFSample *sample = NULL;\n    IMFMediaBuffer *buffer;\n    HRESULT hr;\n    BYTE *data;\n\n    if (FAILED(hr = MFCreateMemoryBuffer(wg_buffer->size, &buffer)))\n        return hr;\n'
+NEW_SEND_4AA = "/* Tessera: decoded video goes into a 2D buffer, the way Windows' decoders deliver it. Games find a frame's lines through\n * IMF2DBuffer (Capcom Arcade 2nd Stadium: without it its movies and everything after them stay black while the sound\n * plays); compressed data, audio and frames whose size does not match the media type keep a plain buffer. */\nstatic HRESULT media_stream_create_buffer(struct media_stream *stream, DWORD size, IMFMediaBuffer **buffer)\n{\n    IMFMediaTypeHandler *handler;\n    IMFMediaType *type = NULL;\n    IMF2DBuffer *buffer_2d;\n    DWORD length = 0;\n    GUID major;\n\n    if (SUCCEEDED(IMFStreamDescriptor_GetMediaTypeHandler(stream->descriptor, &handler)))\n    {\n        IMFMediaTypeHandler_GetCurrentMediaType(handler, &type);\n        IMFMediaTypeHandler_Release(handler);\n    }\n    if (type)\n    {\n        if (SUCCEEDED(IMFMediaType_GetMajorType(type, &major)) && IsEqualGUID(&major, &MFMediaType_Video)\n                && SUCCEEDED(MFCreateMediaBufferFromMediaType(type, 0, 0, 0, buffer)))\n        {\n            if (SUCCEEDED(IMFMediaBuffer_QueryInterface(*buffer, &IID_IMF2DBuffer, (void **)&buffer_2d)))\n            {\n                IMF2DBuffer_GetContiguousLength(buffer_2d, &length);\n                IMF2DBuffer_Release(buffer_2d);\n            }\n            if (length == size)\n            {\n                IMFMediaType_Release(type);\n                return S_OK;\n            }\n            IMFMediaBuffer_Release(*buffer);\n        }\n        IMFMediaType_Release(type);\n    }\n    return MFCreateMemoryBuffer(size, buffer);\n}\n\nstatic HRESULT media_stream_send_sample(struct media_stream *stream, const struct wg_parser_buffer *wg_buffer, IUnknown *token)\n{\n    IMFSample *sample = NULL;\n    IMFMediaBuffer *buffer;\n    HRESULT hr;\n    BYTE *data;\n\n    if (FAILED(hr = media_stream_create_buffer(stream, wg_buffer->size, &buffer)))\n        return hr;\n"
+exact("dlls/winegstreamer/media_source.c", [(OLD_SEND_4AA, NEW_SEND_4AA)])
+
+# 4ab. macOS automount points (/home, /Network/Servers, /net): a Windows program that looked up a build path compiled
+#      into it (VLC's gettext: /home/jenkins/.../locale.alias, Z:\home\jenkins\... on the Z: drive) made Wine read /home
+#      to match the name case-insensitively, and macOS stopped the game behind "Steam.app would like to access files on
+#      a network volume" (RUINER waited at its splash screen). Names that are not mounted in an automount point now
+#      count as missing without touching the file system; mounted network homes and shares keep working.
+AUTOMOUNT_4AB = r"""#ifdef __APPLE__
+/* Tessera: macOS automount points (/home from auto_home; /Network/Servers and /net when /etc/auto_master sets them up).
+ * Reading one, which Wine does to match a name case-insensitively, makes macOS ask "<app> would like to access files
+ * on a network volume" and stops the thread until someone answers; looking up a name that is not mounted there makes
+ * automountd ask the directory service too. Windows programs reach them through build paths compiled into them: the
+ * gettext inside VLC's Windows build looks for /home/jenkins/.../share/locale/locale.alias, which is
+ * Z:\home\jenkins\... on the Z: drive, and RUINER waited at its splash screen for that prompt. A path through an
+ * automount point to a name that is not mounted there now counts as missing without touching the file system; homes
+ * and shares that are mounted there keep working. */
+struct automount_point
+{
+    const char *path;  /* how paths reach it: /home */
+    size_t      len;
+    const char *real;  /* the mount point: /System/Volumes/Data/home */
+};
+static struct automount_point *automount_points;
+static int automount_count;
+static pthread_once_t automount_once = PTHREAD_ONCE_INIT;
+
+static struct statfs *get_mount_list( int *count )
+{
+    struct statfs *list = NULL;
+    int n = getfsstat( NULL, 0, MNT_NOWAIT );
+
+    *count = 0;
+    if (n > 0 && (list = malloc( (n + 8) * sizeof(*list) )))
+    {
+        n = getfsstat( list, (n + 8) * sizeof(*list), MNT_NOWAIT );
+        *count = n > 0 ? n : 0;
+    }
+    return list;
+}
+
+static void init_automount_points(void)
+{
+    static const char data_volume[] = "/System/Volumes/Data";
+    const size_t data_len = sizeof(data_volume) - 1;
+    struct statfs *list;
+    int i, count;
+
+    if (!(list = get_mount_list( &count ))) return;
+    if ((automount_points = calloc( 2 * count + 1, sizeof(*automount_points) )))
+    {
+        for (i = 0; i < count; i++)
+        {
+            char *real;
+
+            if (strcmp( list[i].f_fstypename, "autofs" ) || !(real = strdup( list[i].f_mntonname ))) continue;
+            automount_points[automount_count].path = real;
+            automount_points[automount_count].len = strlen( real );
+            automount_points[automount_count++].real = real;
+            /* the data volume's folders also show at /: /System/Volumes/Data/home is /home */
+            if (!strncmp( real, data_volume, data_len ) && real[data_len] == '/')
+            {
+                automount_points[automount_count].path = real + data_len;
+                automount_points[automount_count].len = strlen( real + data_len );
+                automount_points[automount_count++].real = real;
+            }
+        }
+    }
+    free( list );
+}
+
+/* is something (a network home, a share) mounted at that name in the automount point? */
+static BOOL automount_name_mounted( const struct automount_point *am, const char *name, size_t len )
+{
+    size_t real_len = strlen( am->real );
+    struct statfs *list;
+    int i, count;
+    BOOL ret = FALSE;
+
+    if (!(list = get_mount_list( &count ))) return TRUE;  /* can't tell: leave the path alone */
+    for (i = 0; i < count && !ret; i++)
+    {
+        const char *m = list[i].f_mntonname;
+
+        ret = !strncmp( m, am->real, real_len ) && m[real_len] == '/' &&
+              !strncasecmp( m + real_len + 1, name, len ) && (!m[real_len + 1 + len] || m[real_len + 1 + len] == '/');
+    }
+    free( list );
+    return ret;
+}
+
+static NTSTATUS check_automount_path( const char *unix_name, UINT disposition )
+{
+    static const char dosdevices[] = "/dosdevices/";
+    size_t config_len = strlen( config_dir );
+    int i;
+
+    pthread_once( &automount_once, init_automount_points );
+    for (i = 0; i < automount_count; i++)
+    {
+        const struct automount_point *am = &automount_points[i];
+        const char *p, *name, *end;
+
+        /* the system volume ignores case: Z:\HOME\Jenkins reaches /home as well */
+        for (p = unix_name; (p = strcasestr( p, am->path )); p += am->len)
+        {
+            if (p[am->len] != '/' || !p[am->len + 1] || p[am->len + 1] == '/') continue;
+            /* only the root leads there: a plain Unix path, or a drive mapped to / (dosdevices/z: -> /); a game's own
+             * folder called home is not looked at further */
+            if (p > unix_name)
+            {
+                char link[2], *drive;
+                ssize_t len = -1;
+
+                if (p - unix_name != config_len + sizeof(dosdevices) + 1 || p[-1] != ':' ||
+                    strncmp( unix_name, config_dir, config_len ) ||
+                    strncmp( unix_name + config_len, dosdevices, sizeof(dosdevices) - 1 )) continue;
+                if ((drive = strndup( unix_name, p - unix_name )))
+                {
+                    len = readlink( drive, link, sizeof(link) );
+                    free( drive );
+                }
+                if (len != 1 || link[0] != '/') continue;
+            }
+            name = p + am->len + 1;
+            if (!(end = strchr( name, '/' ))) end = name + strlen( name );
+            if (automount_name_mounted( am, name, end - name )) continue;  /* mounted: real, look further on */
+            TRACE( "%s: %.*s is not mounted in the macOS automount point %s, not looked up\n",
+                   debugstr_a(unix_name), (int)(end - name), name, am->real );
+            if (*end) return STATUS_OBJECT_PATH_NOT_FOUND;
+            if (disposition == FILE_OPEN || disposition == FILE_OVERWRITE) return STATUS_OBJECT_NAME_NOT_FOUND;
+            return STATUS_ACCESS_DENIED;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+#endif
+
+"""
+OLD_LOOKUP_4AB = "static NTSTATUS lookup_unix_name( int root_fd, OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name,\n"
+OLD_SHORTCUT_4AB = r"""        for (p = unix_name + pos ; *p; p++) if (*p == '\\') *p = '/';
+        if (!fstatat( root_fd, unix_name, &st, 0 ))
+"""
+NEW_SHORTCUT_4AB = r"""        for (p = unix_name + pos ; *p; p++) if (*p == '\\') *p = '/';
+#ifdef __APPLE__
+        if (root_fd == AT_FDCWD && (status = check_automount_path( unix_name, disposition ))) return status;
+#endif
+        if (!fstatat( root_fd, unix_name, &st, 0 ))
+"""
+# \??\unix\ paths (Wine's name for a plain Unix path) go through find_drive_nt_root, which stat()s each part of them
+OLD_DRIVE_ROOT_4AB = "    /* strip off trailing slashes */\n    while (len > 1 && unix_name[len - 1] == '/') len--;\n    unix_name[len] = 0;\n\n    for (pos = len; pos; pos = remove_last_component( unix_name, pos ))\n"
+NEW_DRIVE_ROOT_4AB = "    /* strip off trailing slashes */\n    while (len > 1 && unix_name[len - 1] == '/') len--;\n    unix_name[len] = 0;\n#ifdef __APPLE__\n    if ((status = check_automount_path( unix_name, disposition ))) return status;\n#endif\n\n    for (pos = len; pos; pos = remove_last_component( unix_name, pos ))\n"
+exact("dlls/ntdll/unix/file.c", [(OLD_LOOKUP_4AB, AUTOMOUNT_4AB + OLD_LOOKUP_4AB), (OLD_SHORTCUT_4AB, NEW_SHORTCUT_4AB),
+                                 (OLD_DRIVE_ROOT_4AB, NEW_DRIVE_ROOT_4AB)])
+
+# 4ad. Wine's GStreamer parser hands a program one buffer per stream at a time, so a stream the program is not reading
+#      stops at the queue after the demuxer. When the program waits for a stream whose next data lies further on in the
+#      file, the demuxer has to queue the other stream's data in between, and decodebin allowed 8 MB: Capcom Arcade 2nd
+#      Stadium's WMV movies (45 Mbit/s VC-1; ASF sends video up to its 5 s preroll ahead of the audio) filled it with
+#      1.5 s of video while the game waited for audio, the demuxer stopped, and the movie froze after a few frames
+#      (with the game waiting for it, black). Now up to 128 MB. A queue grows past 5 buffers only while another
+#      stream's queue is empty, so ordinary playback keeps the small queue.
+OLD_DECODEBIN_4AD = '    if (!(element = create_element("decodebin", "base")))\n        return FALSE;\n\n    gst_bin_add(GST_BIN(parser->container), element);\n    parser->decodebin = element;\n'
+NEW_DECODEBIN_4AD = '    if (!(element = create_element("decodebin", "base")))\n        return FALSE;\n\n    /* Tessera: the queue after the demuxer may hold up to 128 MB of compressed data (decodebin: 8 MB). A stream the\n     * program is not reading stops there, and when the program waits for a stream whose next data lies further on in\n     * the file (ASF sends video up to its preroll, seconds, ahead of the audio), the data in between must fit: at\n     * 8 MB, 1.5 s of 45 Mbit/s video filled it and the demuxer stopped for good (Capcom Arcade 2nd Stadium\'s movies).\n     * A queue grows past 5 buffers only while another stream\'s queue is empty. */\n    g_object_set(element, "max-size-bytes", 128 * 1024 * 1024, NULL);\n\n    gst_bin_add(GST_BIN(parser->container), element);\n    parser->decodebin = element;\n'
+exact("dlls/winegstreamer/wg_parser.c", [(OLD_DECODEBIN_4AD, NEW_DECODEBIN_4AD)])
+
+# 4ae. BERSERK and the Band of the Hawk minimizes its fullscreen window, asks "Start the game in Windows 7 compatibility
+#      mode?" in a message box the window owns, and restores itself only when it is activated after the question. While
+#      MessageBox runs, its handler answers every activation (EndDialog's included) by showing the box again and
+#      minimizing itself; when the box is destroyed Wine activates nothing (can_activate_window skips minimized windows
+#      since Wine 11, bug 59010), so the game ran on minimized and Steam stayed in front until the player switched to it.
+#      Now, when destroying the foreground popup leaves its thread with nothing active and the popup's owner is visible,
+#      enabled and minimized, the owner is activated from the program's own message loop: posted, so it arrives after
+#      MessageBox has returned, as a switch from the Dock or Cmd-Tab would. Popups hidden with their minimized owner
+#      (bug 59010's case) are not destroyed and keep the owner minimized.
+OLD_DESTROY_4AE = "        if (hwnd == info.hwndCaret) NtUserDestroyCaret();\n        if (hwnd == info.hwndActive) activate_other_window( hwnd );\n"
+NEW_DESTROY_4AE = "        if (hwnd == info.hwndCaret) NtUserDestroyCaret();\n        if (hwnd == info.hwndActive)\n        {\n            HWND foreground = NtUserGetForegroundWindow();\n\n            activate_other_window( hwnd );\n            if (foreground == hwnd) defer_owner_activation( hwnd );\n        }\n"
+OLD_NOTIFY_4AE = "/*******************************************************************\n *           send_parent_notify\n */\n"
+NEW_NOTIFY_4AE = """/*******************************************************************
+ *         defer_owner_activation
+ *
+ * Tessera: the foreground popup hwnd was destroyed and nothing is active. If its owner is minimized (a fullscreen game
+ * that minimized itself for a message box it owns: BERSERK and the Band of the Hawk), the owner is activated once the
+ * thread is back in its own message loop, after MessageBox has returned, as a switch from the Dock would. Activating
+ * it here, inside MessageBox, makes such a game show the box again and minimize itself again.
+ */
+static void defer_owner_activation( HWND hwnd )
+{
+    HWND owner;
+    DWORD style;
+
+    if (get_active_window()) return;
+    if (!(get_window_long( hwnd, GWL_STYLE ) & WS_POPUP)) return;
+    if (!(owner = get_window_relative( hwnd, GW_OWNER ))) return;
+    owner = NtUserGetAncestor( owner, GA_ROOT );
+    style = get_window_long( owner, GWL_STYLE );
+    if ((style & (WS_VISIBLE | WS_MINIMIZE | WS_DISABLED)) != (WS_VISIBLE | WS_MINIMIZE)) return;
+    if (get_window_thread( owner, NULL ) != GetCurrentThreadId()) return;
+    TRACE( "%p destroyed with nothing active: activating its minimized owner %p from the message loop\\n", hwnd, owner );
+    NtUserPostMessage( owner, WM_WINE_SETACTIVEWINDOW, (WPARAM)owner, DEFERRED_OWNER_ACTIVATION );
+}
+
+/*******************************************************************
+ *           send_parent_notify
+ */
+"""
+OLD_HANDLER_4AE = "    case WM_WINE_SETACTIVEWINDOW:\n    {\n        HWND prev;\n\n        if (!wparam && NtUserGetForegroundWindow() == hwnd) return 0;\n"
+NEW_HANDLER_4AE = """    case WM_WINE_SETACTIVEWINDOW:
+    {
+        HWND prev;
+
+        if (lparam == DEFERRED_OWNER_ACTIVATION)
+        {
+            /* Tessera (window.c, defer_owner_activation): only if nothing was activated meanwhile and the window is
+             * still visible, enabled and minimized */
+            DWORD style = get_window_long( hwnd, GWL_STYLE );
+
+            if (get_active_window() || (style & (WS_VISIBLE | WS_MINIMIZE | WS_DISABLED)) != (WS_VISIBLE | WS_MINIMIZE))
+                return 0;
+            TRACE( "activating minimized %p, whose popup was destroyed\\n", hwnd );
+            if (!set_foreground_window( hwnd, FALSE, FALSE )) set_active_window( hwnd, NULL, FALSE, TRUE, 0 );
+            return 0;
+        }
+        if (!wparam && NtUserGetForegroundWindow() == hwnd) return 0;
+"""
+OLD_PRIVATE_4AE = "extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, BOOL force );\n"
+NEW_PRIVATE_4AE = ("extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, BOOL force );\n"
+                   "/* Tessera: lparam of a posted WM_WINE_SETACTIVEWINDOW that activates a minimized owner after its popup was\n"
+                   " * destroyed (window.c, defer_owner_activation); the usual lparam is a thread id, a multiple of 4 */\n"
+                   "#define DEFERRED_OWNER_ACTIVATION 1\n")
+exact("dlls/win32u/window.c", [(OLD_DESTROY_4AE, NEW_DESTROY_4AE), (OLD_NOTIFY_4AE, NEW_NOTIFY_4AE)])
+exact("dlls/win32u/message.c", [(OLD_HANDLER_4AE, NEW_HANDLER_4AE)])
+exact("dlls/win32u/win32u_private.h", [(OLD_PRIVATE_4AE, NEW_PRIVATE_4AE)])
+
+# 4af. Programs that draw text through DirectWrite (WPF and other .NET launchers, Chromium-based ones) find fonts in
+#      Wine's DirectWrite, which reads HKCU\Software\Wine\Fonts\Replacements but not 4z's FontSubstitutes. A Mac has no
+#      Segoe UI, Windows' UI font and WPF's fallback for Cyrillic, Greek and most other scripts, so text that a
+#      program's own font lacks came out as empty boxes (Borderlands 2 RU's launcher: its Compacta font has no
+#      Cyrillic), and 4z's Chinese, Japanese and Korean names never reached DirectWrite. Segoe UI (and its weights) now
+#      stands for Tahoma, Wine's own UI font (Latin, Greek, Cyrillic, Hebrew, Arabic, Thai), Segoe UI Symbol for Apple
+#      Symbols, and 4z's CJK names for the same Mac fonts. GDI reads the same key for names a Mac does not have.
+DWRITE_REPLACEMENTS = [("Segoe UI", "Tahoma"), ("Segoe UI Semibold", "Tahoma"), ("Segoe UI Semilight", "Tahoma"),
+                       ("Segoe UI Light", "Tahoma"), ("Segoe UI Black", "Tahoma"), ("Segoe", "Tahoma"),
+                       ("Segoe UI Symbol", "Apple Symbols"), ("Segoe UI Emoji", "Apple Color Emoji")] + CJK_SUBSTITUTES
+exact("loader/wine.inf.in", [
+    ("[Fonts]\n", "[Fonts]\n" + "".join(f'HKCU,Software\\Wine\\Fonts\\Replacements,"{win}",,"{mac}"\n'
+                                        for win, mac in DWRITE_REPLACEMENTS)),
+])
+
+
+# 4ag. Colour emoji in programs that draw text with Chromium's Skia or other DirectWrite clients (BeamNG's launcher
+#      showed its news emoji as empty boxes). A Mac's emoji font, Apple Color Emoji, keeps every emoji as PNG pictures
+#      in an 'sbix' table; Wine's DirectWrite saw that the font has them but could not hand them out
+#      (IDWriteFontFace4::GetGlyphImageFormats per glyph and GetGlyphImageData were stubs), and its fallback table sent
+#      emoji nowhere. Now a glyph's picture comes from the nearest strike (with its size and origin, as Windows gives
+#      a COLR/PNG emoji), and emoji ranges fall back to "Segoe UI Emoji" as on Windows, which 4af makes Apple Color Emoji.
+OPENTYPE_SBIX_4AG = r"""/* Tessera: one glyph's PNG picture in an 'sbix' table (Apple Color Emoji keeps every emoji as PNG pictures in strikes
+ * of 20 to 160 pixels per em), for IDWriteFontFace4::GetGlyphImageFormats and GetGlyphImageData: Chromium and other
+ * Skia programs draw colour emoji from it. The strike is the smallest one of at least ppem_first pixels per em, else
+ * the biggest (up to ppem_last); a 'dupe' record (the picture of another glyph) is followed once. With png NULL it
+ * only says whether there is one; otherwise *context is the table's, released by ReleaseGlyphImageData. */
+HRESULT opentype_get_sbix_glyph_png(IDWriteFontFace5 *fontface, UINT16 glyph, UINT32 ppem_first, UINT32 ppem_last,
+        struct sbix_glyph_png *png, void **context)
+{
+    unsigned int num_glyphs, num_strikes, i, best_ppem = 0, best_size = 0, best_offset = 0;
+    const struct sbix_glyph_data *best = NULL;
+    const struct sbix_header *header;
+    struct dwrite_fonttable table;
+
+    memset(&table, 0, sizeof(table));
+    table.exists = TRUE;
+    if (!get_fontface_table(fontface, MS_MAXP_TAG, &table))
+        return DWRITE_E_NOCOLOR;
+    num_glyphs = table_read_be_word(&table, FIELD_OFFSET(struct maxp, num_glyphs));
+    IDWriteFontFace5_ReleaseFontTable(fontface, table.context);
+    if (glyph >= num_glyphs)
+        return DWRITE_E_NOCOLOR;
+
+    memset(&table, 0, sizeof(table));
+    table.exists = TRUE;
+    if (!get_fontface_table(fontface, MS_SBIX_TAG, &table))
+        return DWRITE_E_NOCOLOR;
+
+    num_strikes = table_read_be_dword(&table, FIELD_OFFSET(struct sbix_header, num_strikes));
+    header = table_read_ensure(&table, 0, FIELD_OFFSET(struct sbix_header, strike_offset[num_strikes]));
+    for (i = 0; header && i < num_strikes; ++i)
+    {
+        unsigned int strike_offset = GET_BE_DWORD(header->strike_offset[i]), strike_ppem, offset = 0, next = 0, dupe;
+        const struct sbix_glyph_data *data = NULL;
+        const struct sbix_strike *strike;
+        UINT16 id = glyph;
+
+        if (!(strike = table_read_ensure(&table, strike_offset,
+                FIELD_OFFSET(struct sbix_strike, glyphdata_offsets[num_glyphs + 1]))))
+            continue;
+        strike_ppem = GET_BE_WORD(strike->ppem);
+        if (strike_ppem > ppem_last)
+            continue;
+        for (dupe = 0; dupe < 2; ++dupe)
+        {
+            offset = GET_BE_DWORD(strike->glyphdata_offsets[id]);
+            next = GET_BE_DWORD(strike->glyphdata_offsets[id + 1]);
+            data = NULL;
+            if (next <= offset + FIELD_OFFSET(struct sbix_glyph_data, data))
+                break;
+            if (!(data = table_read_ensure(&table, strike_offset + offset, next - offset)))
+                break;
+            if (data->graphic_type != MS_DUPE_TAG || next - offset < FIELD_OFFSET(struct sbix_glyph_data, data) + 2)
+                break;
+            id = GET_BE_WORD(*(const UINT16 *)data->data);
+            data = NULL;
+            if (id >= num_glyphs)
+                break;
+        }
+        if (!data || data->graphic_type != MS_PNG__TAG)
+            continue;
+        if (!best || (strike_ppem >= ppem_first ? (best_ppem < ppem_first || strike_ppem < best_ppem)
+                                               : (best_ppem < ppem_first && strike_ppem > best_ppem)))
+        {
+            best = data;
+            best_ppem = strike_ppem;
+            best_size = next - offset - FIELD_OFFSET(struct sbix_glyph_data, data);
+            best_offset = strike_offset + offset;
+        }
+    }
+
+    /* a PNG starts with its 8-byte signature and the IHDR chunk: length, "IHDR", width, height */
+    if (!best || best_size < 24 || memcmp(best->data + 12, "IHDR", 4))
+    {
+        IDWriteFontFace5_ReleaseFontTable(fontface, table.context);
+        return DWRITE_E_NOCOLOR;
+    }
+    if (!png)
+    {
+        IDWriteFontFace5_ReleaseFontTable(fontface, table.context);
+        return S_OK;
+    }
+    png->data = best->data;
+    png->size = best_size;
+    png->ppem = best_ppem;
+    png->width = GET_BE_DWORD(*(const UINT32 *)(best->data + 16));
+    png->height = GET_BE_DWORD(*(const UINT32 *)(best->data + 20));
+    png->origin_x = (INT16)GET_BE_WORD((UINT16)best->originOffsetX);
+    png->origin_y = (INT16)GET_BE_WORD((UINT16)best->originOffsetY);
+    png->unique_id = best_offset;
+    *context = table.context;
+    return S_OK;
+}
+
+"""
+OLD_FORMATS_ANCHOR_4AG = "UINT32 opentype_get_glyph_image_formats(IDWriteFontFace5 *fontface)\n{\n"
+OLD_TAG_4AG = "#define MS_PNG__TAG DWRITE_MAKE_OPENTYPE_TAG('p','n','g',' ')\n"
+NEW_TAG_4AG = OLD_TAG_4AG + "#define MS_DUPE_TAG DWRITE_MAKE_OPENTYPE_TAG('d','u','p','e')\n"
+OLD_PRIVATE_4AG = "extern UINT32 opentype_get_glyph_image_formats(IDWriteFontFace5 *fontface);\n"
+NEW_PRIVATE_4AG = OLD_PRIVATE_4AG + r"""/* Tessera: a glyph's PNG picture in an 'sbix' table (opentype.c) */
+struct sbix_glyph_png
+{
+    const BYTE *data;
+    UINT32 size, ppem, width, height, unique_id;
+    INT32 origin_x, origin_y;
+};
+extern HRESULT opentype_get_sbix_glyph_png(IDWriteFontFace5 *fontface, UINT16 glyph, UINT32 ppem_first,
+        UINT32 ppem_last, struct sbix_glyph_png *png, void **context);
+"""
+OLD_GETFORMATS_4AG = r"""static HRESULT WINAPI dwritefontface4_GetGlyphImageFormats_(IDWriteFontFace5 *iface, UINT16 glyph,
+    UINT32 ppem_first, UINT32 ppem_last, DWRITE_GLYPH_IMAGE_FORMATS *formats)
+{
+    FIXME("%p, %u, %u, %u, %p: stub\n", iface, glyph, ppem_first, ppem_last, formats);
+
+    return E_NOTIMPL;
+}
+"""
+NEW_GETFORMATS_4AG = r"""static HRESULT WINAPI dwritefontface4_GetGlyphImageFormats_(IDWriteFontFace5 *iface, UINT16 glyph,
+    UINT32 ppem_first, UINT32 ppem_last, DWRITE_GLYPH_IMAGE_FORMATS *formats)
+{
+    struct dwrite_fontface *fontface = impl_from_IDWriteFontFace5(iface);
+
+    TRACE("%p, %u, %u, %u, %p.\n", iface, glyph, ppem_first, ppem_last, formats);
+
+    /* Tessera: the face's outline formats, and PNG when an 'sbix' strike in the range has a picture of this glyph
+     * (Apple Color Emoji); other formats are not looked up per glyph */
+    *formats = fontface->glyph_image_formats & (DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE | DWRITE_GLYPH_IMAGE_FORMATS_CFF);
+    if ((fontface->glyph_image_formats & DWRITE_GLYPH_IMAGE_FORMATS_PNG) &&
+            opentype_get_sbix_glyph_png(iface, glyph, ppem_first, ppem_last, NULL, NULL) == S_OK)
+        *formats |= DWRITE_GLYPH_IMAGE_FORMATS_PNG;
+    return S_OK;
+}
+"""
+OLD_IMAGEDATA_4AG = r"""static HRESULT WINAPI dwritefontface4_GetGlyphImageData(IDWriteFontFace5 *iface, UINT16 glyph,
+    UINT32 ppem, DWRITE_GLYPH_IMAGE_FORMATS format, DWRITE_GLYPH_IMAGE_DATA *data, void **context)
+{
+    FIXME("%p, %u, %u, %d, %p, %p: stub\n", iface, glyph, ppem, format, data, context);
+
+    return E_NOTIMPL;
+}
+
+static void WINAPI dwritefontface4_ReleaseGlyphImageData(IDWriteFontFace5 *iface, void *context)
+{
+    FIXME("%p, %p: stub\n", iface, context);
+}
+"""
+NEW_IMAGEDATA_4AG = r"""static HRESULT WINAPI dwritefontface4_GetGlyphImageData(IDWriteFontFace5 *iface, UINT16 glyph,
+    UINT32 ppem, DWRITE_GLYPH_IMAGE_FORMATS format, DWRITE_GLYPH_IMAGE_DATA *data, void **context)
+{
+    struct dwrite_fontface *fontface = impl_from_IDWriteFontFace5(iface);
+    DWRITE_GLYPH_METRICS metrics;
+    struct sbix_glyph_png png;
+    UINT32 advance;
+    HRESULT hr;
+
+    TRACE("%p, %u, %u, %d, %p, %p.\n", iface, glyph, ppem, format, data, context);
+
+    memset(data, 0, sizeof(*data));
+    *context = NULL;
+
+    /* Tessera: PNG pictures from 'sbix' tables (Apple Color Emoji, which "Segoe UI Emoji" stands for on a Mac) */
+    if (format != DWRITE_GLYPH_IMAGE_FORMATS_PNG)
+    {
+        FIXME("%p, %u, %u, %d: only PNG pictures are supported\n", iface, glyph, ppem, format);
+        return E_NOTIMPL;
+    }
+    if (FAILED(hr = opentype_get_sbix_glyph_png(iface, glyph, ppem, ~0u, &png, context)))
+        return hr;
+
+    if (!fontface->metrics.designUnitsPerEm || FAILED(IDWriteFontFace5_GetDesignGlyphMetrics(iface, &glyph, 1, &metrics, FALSE)))
+        advance = png.width;
+    else
+        advance = MulDiv(metrics.advanceWidth, png.ppem, fontface->metrics.designUnitsPerEm);
+
+    data->imageData = png.data;
+    data->imageDataSize = png.size;
+    data->uniqueDataId = png.unique_id;
+    data->pixelsPerEm = png.ppem;
+    data->pixelSize.width = png.width;
+    data->pixelSize.height = png.height;
+    /* sbix gives the picture's left and bottom edges relative to the glyph origin, y up; DirectWrite wants the
+     * origin inside the picture, y down */
+    data->horizontalLeftOrigin.x = -png.origin_x;
+    data->horizontalLeftOrigin.y = png.height + png.origin_y;
+    data->horizontalRightOrigin.x = data->horizontalLeftOrigin.x + advance;
+    data->horizontalRightOrigin.y = data->horizontalLeftOrigin.y;
+    data->verticalTopOrigin.x = data->horizontalLeftOrigin.x + advance / 2;
+    data->verticalTopOrigin.y = 0;
+    data->verticalBottomOrigin.x = data->verticalTopOrigin.x;
+    data->verticalBottomOrigin.y = png.height;
+    return S_OK;
+}
+
+static void WINAPI dwritefontface4_ReleaseGlyphImageData(IDWriteFontFace5 *iface, void *context)
+{
+    TRACE("%p, %p.\n", iface, context);
+
+    if (context)
+        IDWriteFontFace5_ReleaseFontTable(iface, context);
+}
+"""
+OLD_DINGBATS_4AG = '    { "2700-27BF",              L"Noto Sans Symbols2, Noto Sans Symbols 2" },\n'
+NEW_DINGBATS_4AG = '    { "2700-27BF",              L"Noto Sans Symbols2, Noto Sans Symbols 2, Segoe UI Emoji, Segoe UI Symbol" },\n'
+OLD_SYMBOLS2_4AG = '    { "1F800-1F8FF",            L"Noto Sans Symbols2, Noto Sans Symbols 2" },\n'
+NEW_SYMBOLS2_4AG = ('    /* Tessera: emoji and symbols, as Windows maps them ("Segoe UI Emoji" and "Segoe UI Symbol" stand for Apple\n'
+                    '       Color Emoji and Apple Symbols on a Mac, rule 4af) */\n'
+                    '    { "2600-26FF",              L"Segoe UI Symbol, Segoe UI Emoji" },\n'
+                    '    { "1F000-1F02F, 1F0A0-1F0FF, 1F100-1F1FF, 1F200-1F2FF, 1F300-1F5FF, 1F600-1F64F, 1F680-1F6FF, "\n'
+                    '      "1F900-1F9FF, 1FA70-1FAFF", L"Segoe UI Emoji, Segoe UI Symbol" },\n' + OLD_SYMBOLS2_4AG)
+exact("dlls/dwrite/opentype.c", [(OLD_TAG_4AG, NEW_TAG_4AG), (OLD_FORMATS_ANCHOR_4AG, OPENTYPE_SBIX_4AG + OLD_FORMATS_ANCHOR_4AG)])
+exact("dlls/dwrite/dwrite_private.h", [(OLD_PRIVATE_4AG, NEW_PRIVATE_4AG)])
+exact("dlls/dwrite/font.c", [(OLD_GETFORMATS_4AG, NEW_GETFORMATS_4AG), (OLD_IMAGEDATA_4AG, NEW_IMAGEDATA_4AG)])
+exact("dlls/dwrite/analyzer.c", [(OLD_DINGBATS_4AG, NEW_DINGBATS_4AG), (OLD_SYMBOLS2_4AG, NEW_SYMBOLS2_4AG)])
+# Also: a font of pictures only (Apple Color Emoji: fixed sizes, no scalable outlines) has no size of upem pixels, and
+# Wine gave up on its design metrics there (FT_Set_Pixel_Sizes fails), so emoji had an advance of 0; unscaled metrics
+# need no size.
+OLD_METRICS_SIZE_4AG = "    if (!(size = freetype_set_face_size(face, params->upem)))\n        return STATUS_UNSUCCESSFUL;\n\n    if (!pFT_Load_Glyph(face, params->glyph, FT_LOAD_NO_SCALE))\n"
+NEW_METRICS_SIZE_4AG = ("    /* Tessera: a font of pictures only (Apple Color Emoji) has no size of upem pixels; unscaled metrics need none */\n"
+                        "    if (!(size = freetype_set_face_size(face, params->upem)) && FT_IS_SCALABLE(face))\n        return STATUS_UNSUCCESSFUL;\n\n"
+                        "    if (!pFT_Load_Glyph(face, params->glyph, FT_LOAD_NO_SCALE))\n")
+OLD_METRICS_DONE_4AG = "    pFT_Done_Size(size);\n\n    return STATUS_SUCCESS;\n}\n\nstruct decompose_context"
+NEW_METRICS_DONE_4AG = "    if (size) pFT_Done_Size(size);\n\n    return STATUS_SUCCESS;\n}\n\nstruct decompose_context"
+exact("dlls/dwrite/freetype.c", [(OLD_METRICS_SIZE_4AG, NEW_METRICS_SIZE_4AG), (OLD_METRICS_DONE_4AG, NEW_METRICS_DONE_4AG)])
+
+
 # 4ah. pipe2() is new in macOS 27. Wine's configure finds it in the macOS 27 SDK (HAVE_PIPE2) and ntdll calls it for
 #      the pipes to the Wine server in every process and thread; the runtime is built to run on older macOS too, where
 #      the function is not there, and calling it stopped every Windows program at start ("game exited with 11", a

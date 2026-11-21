@@ -7,7 +7,7 @@ distributed (it is free).
 
 | Component | Version | Licence | Licence text |
 |---|---|---|---|
-| **D3DMetal** (Apple Game Porting Toolkit redistributables) | 3.0 | Apple's Game Porting Toolkit licence: distributed unmodified, free of charge, non-commercial only (sections 2A(iii) and 2C) | `D3DMetal - Apple Game Porting Toolkit License.txt`, `D3DMetal - Acknowledgements.txt` |
+| **D3DMetal** (Apple Game Porting Toolkit redistributables, with Apple's NVAPI and NGX-on-MetalFX stand-ins for "DLSS through MetalFX") | 4.0 beta 3, and 3.0 for macOS before 26.4 | Apple's Game Porting Toolkit licence: distributed unmodified, free of charge, non-commercial only (sections 2A(iii) and 2C) | `D3DMetal - Apple Game Porting Toolkit License.txt`, `D3DMetal - Acknowledgements.txt` |
 | **Wine** (with Tessera's changes) | 11.0 | GNU LGPL 2.1 or later | `Wine - LGPL 2.1.txt`, `Wine - authors.txt` |
 | Libraries Wine builds into its DLLs: Capstone, compiler-rt, FAudio, FluidSynth, GSM 06.10, libjpeg, JPEG XR, Little CMS, OpenLDAP, mpg123, musl, libpng, libtiff, LibTomCrypt, vkd3d, libxml2, libxslt, zlib | as in Wine 11.0 | each its own (BSD, MIT, zlib, IJG, LGPL, OpenLDAP, libpng, libtiff, public domain) | `Wine - bundled libraries (libjpeg, libpng, libtiff, zlib and others).txt` |
 | Unicode data (Wine's locale and Unicode tables) | — | Unicode License v3 | `Unicode data - Unicode License v3.txt` |
@@ -30,10 +30,18 @@ distributed (it is free).
 | **Wine Gecko** (Wine's Internet Explorer engine) | 2.47.4 | Mozilla Public License 2.0 | `Wine Gecko - MPL 2.0.txt` |
 | **OpenAL Soft** (with PFFFT and HRTF data from MIT's KEMAR measurements) | 1.25.2 | GNU LGPL 2.0 or later; PFFFT BSD-style; KEMAR data free with credit | `OpenAL Soft - LGPL 2.0 and notices.txt` |
 
-**Not included:** Microsoft's Visual C++ runtimes 2005–2022 (with MFC), MFC 4.2 and parts of DirectX 9.0c (June 2010).
-Microsoft's licence does not allow Tessera to ship them. From 1.2.9 on, Tessera downloads Microsoft's own installers
-from Microsoft's servers on the player's Mac, checks each against a known SHA-256 checksum and installs them into each
-game's Windows folder; they are used under Microsoft's licence terms for those packages.
+**Not included:** Microsoft's Visual C++ runtimes 2005–2022 (with MFC), MFC 4.2, parts of DirectX 9.0c (June 2010) and
+the Visual Basic 6 runtime. Microsoft's licence does not allow Tessera to ship them. From 1.2.9 on, Tessera downloads
+Microsoft's own installers from Microsoft's servers on the player's Mac (the Visual Basic 6 runtime: only its file from
+Microsoft's Windows XP SP3 package on the Windows Update servers), checks each against a known SHA-256 checksum and
+installs them into each game's Windows folder; they are used under Microsoft's licence terms for those packages.
+
+**Also not included:** Valve's Windows Steam files (steamclient.dll, steamclient64.dll, GameOverlayRenderer64.dll,
+Steam.dll, SteamService.exe and Steam's install-script runner iscriptevaluator.exe). The Linux Steam client carries
+them for Windows games; the Mac client does not. From 1.2.11.1 on, Tessera downloads Valve's own package from Valve's
+update server on the player's Mac (29 MB, checked against its SHA-256), keeps the six files in its own folder and
+puts copies into each game's Windows folder and into Steam's own `legacycompat` folder (where Steam's script runner
+looks for them; "Remove from Steam" takes those out); they are Valve's, unmodified, used with the player's own Steam.
 
 Source code: the LGPL requires the exact sources of Wine, FreeType, GnuTLS, Nettle, GMP, FFmpeg, GStreamer and GLib
 as built; they are attached to every release as `tessera-runtime-src-<version>.tar.xz` (with Tessera's changes and

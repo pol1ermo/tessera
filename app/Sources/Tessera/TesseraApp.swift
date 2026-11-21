@@ -32,7 +32,7 @@ final class AppModel: ObservableObject {
     @Published var needsAppManagement = false
     @Published var runtimes: Runtimes = .checking
 
-    /// Microsoft's runtimes (MicrosoftPackages.swift) as the Steam page shows them
+    /// Microsoft's runtimes (MicrosoftPackages.swift) and Valve's Steam files (ValveFiles.swift) as the Steam page shows them
     enum Runtimes: Equatable {
         case checking
         case ready
@@ -43,7 +43,7 @@ final class AppModel: ObservableObject {
     init() {
         refresh()
         Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate() }
-        // as soon as Tessera opens: what is missing comes from Microsoft now, not at a game's first start
+        // as soon as Tessera opens: what is missing comes from Microsoft and Valve now, not at a game's first start
         downloadRuntimes()
     }
 
@@ -56,15 +56,17 @@ final class AppModel: ObservableObject {
         runtimes = .checking
         Task.detached(priority: .utility) {
             let missing = microsoftPackages.filter { !microsoftPackageIsDownloaded($0) }
-            let total = missing.reduce(Int64(0)) { $0 + $1.size }
+            // Valve's Steam files for Windows games (ValveFiles.swift): the Mac Steam client does not include them
+            let needValve = !valveFilesAreDownloaded()
+            let total = missing.reduce(Int64(0)) { $0 + $1.downloadSize } + (needValve ? valveDownloadSize : 0)
             var done: Int64 = 0
-            if !missing.isEmpty { await MainActor.run { self.runtimes = .downloading(received: 0, total: total) } }
-            for package in missing {
-                let before = done
-                let failure = downloadMicrosoftPackage(package) { received in
-                    Task { @MainActor in   // a late update never turns "ready" or "failed" back into "downloading"
+            if !missing.isEmpty || needValve { await MainActor.run { self.runtimes = .downloading(received: 0, total: total) } }
+            if needValve {
+                // first: without them a game does not reach Steam, without Microsoft's it mostly still starts
+                let failure = downloadValveFiles { received in
+                    Task { @MainActor in
                         if case .downloading = self.runtimes {
-                            self.runtimes = .downloading(received: before + min(received, package.size), total: total)
+                            self.runtimes = .downloading(received: min(received, valveDownloadSize), total: total)
                         }
                     }
                 }
@@ -72,7 +74,22 @@ final class AppModel: ObservableObject {
                     await MainActor.run { self.runtimes = .failed(failure); self.runtimesBusy = false }
                     return
                 }
-                done += package.size
+                done += valveDownloadSize
+            }
+            for package in missing {
+                let before = done
+                let failure = downloadMicrosoftPackage(package) { received in
+                    Task { @MainActor in   // a late update never turns "ready" or "failed" back into "downloading"
+                        if case .downloading = self.runtimes {
+                            self.runtimes = .downloading(received: before + min(received, package.downloadSize), total: total)
+                        }
+                    }
+                }
+                if let failure {
+                    await MainActor.run { self.runtimes = .failed(failure); self.runtimesBusy = false }
+                    return
+                }
+                done += package.downloadSize
             }
             await MainActor.run { self.runtimes = .ready; self.runtimesBusy = false }
         }

@@ -5,12 +5,13 @@ import Foundation
 ///     Tessera.app/Contents/MacOS/Tessera --status
 ///     Tessera.app/Contents/MacOS/Tessera --install [--all-games] [--keep-mappings]
 ///     Tessera.app/Contents/MacOS/Tessera --uninstall
+///     Tessera.app/Contents/MacOS/Tessera --restore-steam                    (Valve's own files back into Steam.app)
 ///     Tessera.app/Contents/MacOS/Tessera --play-windows-version APPID
 ///     Tessera.app/Contents/MacOS/Tessera --runtimes | --download-runtimes   (Microsoft's runtimes)
 ///
 /// TESSERA_STEAM_APP=/path/to/Steam.app points every step at another copy of Steam.app.
 enum CLI {
-    static let commands = ["--status", "--install", "--uninstall", "--play-windows-version", "--runtimes", "--download-runtimes", "--help"]
+    static let commands = ["--status", "--install", "--uninstall", "--restore-steam", "--play-windows-version", "--runtimes", "--download-runtimes", "--help"]
 
     /// Runs a command and exits when the app was started with one; returns otherwise.
     static func runIfRequested() {
@@ -37,17 +38,26 @@ enum CLI {
                 for package in microsoftPackages {
                     print("\(microsoftPackageIsDownloaded(package) ? "downloaded" : "missing   ")  \(package.file)")
                 }
+                print("\(valveFilesAreDownloaded() ? "downloaded" : "missing   ")  Valve's Steam files for Windows games (\(valveFiles.map(\.name).joined(separator: ", ")))")
             case "--download-runtimes":
                 for package in microsoftPackages where !microsoftPackageIsDownloaded(package) {
                     print("downloading \(package.file) (\(package.size / 1_000_000) MB) from Microsoft")
                     if let failure = downloadMicrosoftPackage(package) { throw SteamSetup.SetupError.failed(failure) }
                 }
                 print("all \(microsoftPackages.count) of Microsoft's runtimes are downloaded")
+                if !valveFilesAreDownloaded() {
+                    print("downloading Valve's Steam files for Windows games (\(valveDownloadSize / 1_000_000) MB) from Valve")
+                    if let failure = downloadValveFiles() { throw SteamSetup.SetupError.failed(failure) }
+                }
+                print("Valve's Steam files for Windows games are downloaded")
             case "--uninstall":
                 try SteamSetup.uninstall()
                 print("state: \(describe(SteamSetup.state()))")
+            case "--restore-steam":
+                try SteamSetup.restoreOriginals()
+                print("Steam.app has Valve's own files again")
             default:
-                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --play-windows-version APPID | --runtimes | --download-runtimes")
+                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --restore-steam | --play-windows-version APPID | --runtimes | --download-runtimes")
             }
             exit(0)
         } catch {

@@ -30,5 +30,5 @@ of charge, non-commercial only), Wine, Wine Mono, Wine Gecko, DXMT, DXVK, Molten
 Nettle, GMP, FFmpeg, GStreamer, GLib and Valve's Steam bridge code. [LICENSES.md](LICENSES.md) lists every component
 with its licence; the texts are in [`licenses/`](licenses/), inside the app (`Tessera.app/Contents/Resources/Licenses`)
 and in `Tessera-licences.zip` next to every release. The LGPL libraries' exact sources with Tessera's changes are attached
-to every release (`tessera-runtime-src-*.tar.xz`). Microsoft's Visual C++ runtimes, MFC and DirectX 2010 parts are
-not included: Tessera downloads them from Microsoft on your Mac and installs them into each game's Windows folder.
+to every release (`tessera-runtime-src-*.tar.xz`). Microsoft's Visual C++ runtimes, MFC, DirectX 2010 parts and the
+Visual Basic 6 runtime are not included: Tessera downloads them from Microsoft on your Mac and installs them into each game's Windows folder. Valve's Windows Steam files (steamclient.dll and Steam's script runner), which the Mac Steam client does not carry, come the same way from Valve's update server.

@@ -25,7 +25,9 @@ set -euo pipefail
 RT=${TESSERA_RT:-$HOME/.tessera/build/rt}
 WINE=$RT/wine-stage/opt/tessera
 DEPS=$RT/deps
-GPTK=${TESSERA_GPTK:-$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/apple_gptk}
+# D3DMetal 4.0 beta 3 (Game Porting Toolkit 4.0b3, from 21 Nov): 3.0 crashed Unreal 5 Direct3D 12 games at start
+# (Satisfactory: sampler heap check) and its DLSS-through-MetalFX parts need 4.0
+GPTK=${TESSERA_GPTK:-$HOME/.tessera/build/gptk4/redist/lib}
 DXMT=${TESSERA_DXMT:-$RT/dxmt/v0.80}
 DXVK=${TESSERA_DXVK:-$RT/deps/dxvk}
 BRIDGE=${TESSERA_BRIDGE:-$HOME/.tessera/build/bridge/out}
@@ -173,6 +175,36 @@ done
 rm -rf "$OUT/lib64/apple_gptk/wine"
 # NVIDIA's names stay out of the default path: Chromium-based launchers probe nvapi64 at start and stall on it
 rm -f "$W/nvapi64.dll" "$W/nvngx.dll" "$U/nvapi64.so" "$U/nvngx.so"
+# DLSS through MetalFX: Apple's NVIDIA stand-ins (NVAPI, and NGX on MetalFX) in a folder of their own, which the
+# launcher adds only for a game whose "DLSS through MetalFX" setting is on. Apple's files keep their own names; NVIDIA's
+# names (nvngx, and _nvngx, the second name NGX loads its core by) are links to them.
+if [ -f "$GPTK/wine/x86_64-windows/nvngx-on-metalfx.dll" ] && [ -f "$GPTK/wine/x86_64-windows/nvapi64.dll" ]; then
+    M="$OUT/lib/metalfx"
+    mkdir -p "$M/x86_64-windows" "$M/x86_64-unix"
+    cp "$GPTK/wine/x86_64-windows/nvapi64.dll" "$GPTK/wine/x86_64-windows/nvngx-on-metalfx.dll" "$M/x86_64-windows/"
+    ln -sf nvngx-on-metalfx.dll "$M/x86_64-windows/nvngx.dll"
+    ln -sf nvngx-on-metalfx.dll "$M/x86_64-windows/_nvngx.dll"
+    for d in nvapi64 nvngx _nvngx; do ln -sf "../../../lib64/apple_gptk/external/libd3dshared.dylib" "$M/x86_64-unix/$d.so"; done
+fi
+# D3DMetal 3.0 next to it. Apple marks D3DMetal 4's shader library for macOS 26.4 and later, D3DMetal 3.0's for macOS
+# 15.4 and later, and 4.0 is a beta. On a macOS before 26.4, or for a game set to "D3DMetal 3.0", the launcher uses
+# this set instead: Apple's 3.0 framework in a folder of its own, and its Direct3D DLLs as a backend folder
+# (TESSERA_BACKEND_DIR) together with Wine's own d3d12core - without that one, a game asking for d3d12core would get
+# D3DMetal 4's from the default folder, and two D3DMetal versions in one process.
+GPTK3=${TESSERA_GPTK3:-$HOME/.tessera/Runtimes/wine-11.0-tessera-20260907/lib64/apple_gptk}
+GPTK_VERSION=$(defaults read "$GPTK/external/D3DMetal.framework/Versions/A/Resources/Info.plist" CFBundleShortVersionString 2>/dev/null)
+GPTK3_VERSION=$(defaults read "$GPTK3/external/D3DMetal.framework/Versions/A/Resources/Info.plist" CFBundleShortVersionString 2>/dev/null || true)
+if [ -n "$GPTK3_VERSION" ] && [ "$GPTK3_VERSION" != "$GPTK_VERSION" ]; then
+    ditto "$GPTK3/external" "$OUT/lib64/apple_gptk3/external"
+    D3="$OUT/lib/d3dmetal3"
+    mkdir -p "$D3/x86_64-windows" "$D3/x86_64-unix"
+    for d in d3d10 d3d11 d3d12 dxgi; do
+        cp "$GPTK3/wine/x86_64-windows/$d.dll" "$D3/x86_64-windows/$d.dll"
+        ln -sf "../../../lib64/apple_gptk3/external/libd3dshared.dylib" "$D3/x86_64-unix/$d.so"
+    done
+    cp "$OUT/lib/wined3d/x86_64-windows/d3d12core.dll" "$D3/x86_64-windows/d3d12core.dll"
+    echo "   D3DMetal $GPTK_VERSION (default) and $GPTK3_VERSION (macOS before 26.4, or by a game's setting)"
+fi
 
 step "DXMT"
 mkdir -p "$OUT/lib/dxmt"
@@ -233,6 +265,7 @@ find "$OUT/lib64" -maxdepth 1 -name "*.dylib" -type f -exec codesign --force --s
 codesign --force --sign - "$OUT/lib64/dxvk/libMoltenVK.dylib"
 xattr -cr "$OUT" 2>/dev/null || true
 codesign -v "$OUT/lib64/apple_gptk/external/libd3dshared.dylib" && echo "   D3DMetal keeps Apple's signature"
+[ ! -d "$OUT/lib64/apple_gptk3" ] || { codesign -v "$OUT/lib64/apple_gptk3/external/libd3dshared.dylib" && echo "   D3DMetal $GPTK3_VERSION keeps Apple's signature"; }
 
 step "description"
 cat > "$OUT/tessera-runtime.json" <<EOF
@@ -241,7 +274,8 @@ cat > "$OUT/tessera-runtime.json" <<EOF
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "wine": "$("$OUT/bin/wine" --version 2>/dev/null || echo wine-11.0)",
   "components": {
-    "D3DMetal": "Apple Game Porting Toolkit redistributable (unmodified)",
+    "D3DMetal": "Apple Game Porting Toolkit redistributable $(defaults read "$GPTK/external/D3DMetal.framework/Versions/A/Resources/Info.plist" CFBundleShortVersionString 2>/dev/null) (unmodified)",
+    "D3DMetal for macOS before 26.4": "$([ -d "$OUT/lib64/apple_gptk3" ] && echo "Apple Game Porting Toolkit redistributable $GPTK3_VERSION (unmodified)" || echo none)",
     "DXMT": "$(basename "$DXMT")",
     "MoltenVK": "1.4.2",
     "DXVK": "1.10.3 for macOS (built from source)",
@@ -250,7 +284,7 @@ cat > "$OUT/tessera-runtime.json" <<EOF
     "GnuTLS": "$(sed -n 's/^#define GNUTLS_VERSION "\(.*\)"/\1/p' "$DEPS/include/gnutls/gnutls.h")",
     "FFmpeg": "$([ -f "$DEPS/lib/libavcodec.61.dylib" ] && echo 7.1.1 || echo none)"
   },
-  "graphics": ["d3dmetal", "dxmt", "dxvk", "wined3d"]
+  "graphics": ["d3dmetal", "d3dmetal3", "dxmt", "dxvk", "wined3d"]
 }
 EOF
 

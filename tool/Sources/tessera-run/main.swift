@@ -74,6 +74,28 @@ struct Runtime {
     }
 }
 
+/// The version and build time of the Tessera.app this runtime sits in, e.g. "1.2.11.1 (build 202611211755)": two builds
+/// of one version can then be told apart in a log someone sends.
+func tesseraVersion() -> String {
+    let plist = runtime.root.appendingPathComponent("../../Info.plist").standardized
+    guard let info = NSDictionary(contentsOf: plist) else { return "unknown (a runtime outside Tessera.app)" }
+    return "\(info["CFBundleShortVersionString"] as? String ?? "?") (build \(info["CFBundleVersion"] as? String ?? "?"))"
+}
+
+/// The Mac a log comes from, e.g. "macOS 27.2 (Build 27C5318a), Mac15,9, Apple M3 Max, 64 GB memory".
+func systemSummary() -> String {
+    func value(_ name: String) -> String {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return "?" }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return "?" }
+        return String(cString: buffer)
+    }
+    let system = ProcessInfo.processInfo.operatingSystemVersionString.replacingOccurrences(of: "Version ", with: "")
+    let memory = (ProcessInfo.processInfo.physicalMemory + (1 << 29)) >> 30
+    return "macOS \(system), \(value("hw.model")), \(value("machdep.cpu.brand_string")), \(memory) GB memory"
+}
+
 // MARK: - environment
 
 let steamEnv = ProcessInfo.processInfo.environment
@@ -91,11 +113,18 @@ func prefixURL() -> URL {
     // Tessera then uses a folder of its own next to it.
     let compat = URL(fileURLWithPath: data)
     let pfx = compat.appendingPathComponent("pfx")
+    let own = compat.appendingPathComponent("tessera")
     let fm = FileManager.default
     if !fm.fileExists(atPath: pfx.path) || fm.fileExists(atPath: pfx.appendingPathComponent(".tessera").path) {
         return pfx
     }
-    return compat.appendingPathComponent("tessera")
+    // a folder of Tessera's own that is already in use stays in use
+    if fm.fileExists(atPath: own.appendingPathComponent("system.reg").path) { return own }
+    // Before the first start of a game that has cloud saves, Steam itself makes pfx/drive_c/users/steamuser and puts
+    // the saves there. That is no other tool's Windows folder (it has no registry), and it is the one to set up: up
+    // to 1.2.11 Tessera took it for one and made its own folder beside it, where the game never saw those saves.
+    if !fm.fileExists(atPath: pfx.appendingPathComponent("system.reg").path) { return pfx }
+    return own
 }
 
 func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
@@ -164,12 +193,37 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     // The app's graphics choice, translated to the runtime's backend folder (D3DMetal is the runtime's default).
     // Automatic (no choice in the game's settings): D3DMetal, except for engines D3DMetal is known to trip up.
     var graphics = env["TESSERA_GRAPHICS"] ?? "d3dmetal"
+    // "d3dmetal3" is D3DMetal with Apple's 3.0 instead of 4.0 (see below)
+    var d3dMetal3 = graphics == "d3dmetal3"
+    if d3dMetal3 { graphics = "d3dmetal" }
+    let macOS = macOSVersion(env)
     if env["TESSERA_GRAPHICS"] == nil, let game = gameNeedingDXVK(exe: exe, env: env) {
         graphics = "dxvk"
         log("\(game): graphics through DXVK (automatic choice)")
     } else if env["TESSERA_GRAPHICS"] == nil, let engine = engineNeedingDXMT(exe: exe, env: env) {
-        graphics = "dxmt"
-        log("\(engine) game: graphics through DXMT (automatic choice)")
+        // DXMT's Metal bridge is made for macOS 15 and later
+        graphics = macOS >= (15, 0) ? "dxmt" : "dxvk"
+        log("\(engine) game: graphics through \(graphics == "dxmt" ? "DXMT" : "DXVK (DXMT needs macOS 15)") (automatic choice)")
+    }
+    // Apple's D3DMetal comes twice in the runtime. Apple marks D3DMetal 4's shader library for macOS 26.4 and later
+    // and D3DMetal 3.0's for macOS 15.4 and later, so a macOS before 26.4 gets 3.0, and a game's settings can ask for
+    // 3.0 as well (4.0 is a beta). Before macOS 15.4 neither loads: DirectX 9-11 then go through DXVK by themselves.
+    if graphics == "d3dmetal" {
+        let has3 = FileManager.default.fileExists(atPath: "\(root)/lib/d3dmetal3/x86_64-windows/d3d12.dll")
+        if !(macOS >= (15, 4)) {
+            if env["TESSERA_GRAPHICS"] == nil {
+                graphics = "dxvk"
+                d3dMetal3 = false
+                log("macOS \(macOS.0).\(macOS.1): Apple's D3DMetal needs macOS 15.4 or later; DirectX 9-11 through DXVK (DirectX 12 games need a newer macOS)")
+            } else {
+                log("macOS \(macOS.0).\(macOS.1): Apple's D3DMetal needs macOS 15.4 or later and may not start here")
+            }
+        } else if !has3 {
+            d3dMetal3 = false
+        } else if !d3dMetal3, !(macOS >= (26, 4)) {
+            d3dMetal3 = true
+            log("macOS \(macOS.0).\(macOS.1): D3DMetal 3.0 (D3DMetal 4 needs macOS 26.4 or later)")
+        }
     }
     // A game drawing through D3DMetal starts on a desktop as big as the screen's largest real mode (Tessera's Wine
     // reads TESSERA_FULL_RESOLUTION): Apple's DXGI lists display modes only up to the desktop size, so the game opens
@@ -202,13 +256,34 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
         // (patch-wine.py 4x); DYLD_LIBRARY_PATH cannot do it, macOS ignores it for Wine's signed loader
         env["TESSERA_BACKEND_DIR"] = "\(root)/lib/dxvk"
         env["TESSERA_LIBVULKAN"] = "\(root)/lib64/dxvk/libMoltenVK.dylib"
-    default: env.removeValue(forKey: "TESSERA_BACKEND_DIR")
+    default:
+        // D3DMetal 4 is the runtime's default folder; 3.0's Direct3D DLLs are a backend folder like the others
+        if graphics == "d3dmetal", d3dMetal3 { env["TESSERA_BACKEND_DIR"] = "\(root)/lib/d3dmetal3" }
+        else { env.removeValue(forKey: "TESSERA_BACKEND_DIR") }
     }
     env["TESSERA_ACTIVE_GRAPHICS_BACKEND"] = graphics
+    env.removeValue(forKey: "TESSERA_D3DMETAL")
     if graphics == "d3dmetal" {
         // Apple's D3DMetal helper is loaded into every process: it registers the native code D3DMetal runs
-        // inside the Intel (Rosetta) process, so Wine's exception handling knows about it
-        env["TESSERA_APPLEGPTK_LIBD3DSHARED_PATH"] = "\(root)/lib64/apple_gptk/external/libd3dshared.dylib"
+        // inside the Intel (Rosetta) process, so Wine's exception handling knows about it. It is the helper of the
+        // D3DMetal version in use (one process never holds both).
+        env["TESSERA_APPLEGPTK_LIBD3DSHARED_PATH"] = "\(root)/lib64/\(d3dMetal3 ? "apple_gptk3" : "apple_gptk")/external/libd3dshared.dylib"
+        env["TESSERA_D3DMETAL"] = d3dMetal3 ? "3" : "4"
+    }
+    // DLSS through MetalFX (the game's "DLSS through MetalFX" setting, D3DM_ENABLE_METALFX=1, with D3DMetal): D3DMetal 4
+    // answers a game's NVIDIA DLSS calls with Apple's MetalFX upscaler. The game has to see an NVIDIA card
+    // (D3DM_VENDOR_ID) and NVIDIA's NVAPI and NGX libraries: Apple's stand-ins come from the runtime's metalfx folder,
+    // for this game's programs only (stageDLSS puts the signed files NGX checks into its system32). Chromium-based
+    // launchers stall on nvapi64 and Steam's helpers have no use for it, so in such a game they get the stand-ins off.
+    if dlssThroughMetalFX(env) {
+        if isChromiumBased(exe: exe) || isSteamHelper(exe) {
+            env["WINEDLLOVERRIDES"] = "nvapi64,nvngx,_nvngx=d;" + (env["WINEDLLOVERRIDES"] ?? "")
+        } else {
+            env["WINEDLLPATH"] = (env["WINEDLLPATH"] ?? "") + ":\(root)/lib/metalfx"
+            env["D3DM_VENDOR_ID"] = env["D3DM_VENDOR_ID"] ?? "0x10de"
+            env["WINEDLLOVERRIDES"] = "nvapi64,nvngx,_nvngx=b;" + (env["WINEDLLOVERRIDES"] ?? "")
+            log("DLSS through MetalFX: on (the game sees an NVIDIA card; Apple's MetalFX does the upscaling)")
+        }
     }
     // Steam's overlay (Shift+Tab): Steam names its libraries in STEAM_DYLD_INSERT_LIBRARIES; Tessera's Wine puts them
     // into each Windows program (TESSERA_OVERLAY_DYLIBS). On unless a game's settings say TESSERA_STEAM_OVERLAY=0.
@@ -220,8 +295,19 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
     return env
 }
 
+/// This Mac's macOS version (major, minor). TESSERA_TEST_MACOS=15.7 in a game's settings pretends another one, to test
+/// what Tessera chooses on an older macOS.
+func macOSVersion(_ env: [String: String]) -> (Int, Int) {
+    if let test = env["TESSERA_TEST_MACOS"] {
+        let parts = test.split(separator: ".").compactMap { Int($0) }
+        if let major = parts.first { return (major, parts.count > 1 ? parts[1] : 0) }
+    }
+    let v = ProcessInfo.processInfo.operatingSystemVersion
+    return (v.majorVersion, v.minorVersion)
+}
+
 /// The Elder Scrolls V: Skyrim Special Edition crashes in its own code under both Metal translations of Direct3D 11
-/// (D3DMetal and DXMT: an access violation about 12 s in, at the intro video and again at New Game; CrossOver users see
+/// (D3DMetal and DXMT: an access violation about 12 s in, at the intro video and again at New Game; others report
 /// the same with D3DMetal) and runs on DXVK. Steam starts its launcher, whose game process inherits the choice. The
 /// game's settings can turn this off with TESSERA_ENGINE_SWITCHES=0.
 func gameNeedingDXVK(exe: String, env: [String: String]) -> String? {
@@ -479,15 +565,24 @@ func prefixTemplate(env: [String: String]) -> URL? {
     // the Windows extras installed into it (WindowsExtras.swift) are part of it too
     let key = stableHash("\(runtime.root.path)|\(Int(changed))|\(attrs[.size] ?? 0)|\(mono)|extras \(windowsExtrasVersion)")
     let template = templatesDir.appendingPathComponent(key)
-    let ready = { fm.fileExists(atPath: template.appendingPathComponent("system.reg").path) }
+    // Ready when Wine's set-up finished (it writes .update-timestamp at its end). The registry alone does not say so:
+    // the Wine server writes one even when every program stopped at start (Tessera up to 1.2.10 on macOS before 27),
+    // and such a half-made template was cloned into every game's folder.
+    let ready = { fm.fileExists(atPath: template.appendingPathComponent("system.reg").path)
+        && fm.fileExists(atPath: template.appendingPathComponent(".update-timestamp").path) }
     if ready() { return template }
+    if fm.fileExists(atPath: template.path) {
+        log("the Windows folder template is incomplete (made by an earlier Tessera that could not start Windows programs here); making it again")
+        try? fm.removeItem(at: template)
+    }
     log("building the Windows folder template (once per Tessera version)")
     // built under a temporary name, so two games starting at once never clone a half-built one
     let building = templatesDir.appendingPathComponent("\(key).building-\(getpid())")
     try? fm.removeItem(at: building)
     buildPrefix(building, env: env)
     installWindowsExtras(building, env: env, waitForServer: true)
-    if fm.fileExists(atPath: building.appendingPathComponent("system.reg").path), !ready() {
+    if fm.fileExists(atPath: building.appendingPathComponent("system.reg").path),
+       fm.fileExists(atPath: building.appendingPathComponent(".update-timestamp").path), !ready() {
         try? fm.moveItem(at: building, to: template)
     }
     try? fm.removeItem(at: building)
@@ -578,6 +673,8 @@ if let previous = try? String(contentsOf: desktopMarker, encoding: .utf8) {
 ensurePrefix(prefix, env: env)
 // a folder made before this Tessera version (or while offline) gets the Windows extras now, once
 installWindowsExtras(prefix, env: env, waitForServer: false)
+// Microsoft's .NET Framework, only for the few launchers Wine Mono cannot run (DotNetFramework.swift); asks first
+if let reason = dotNetFrameworkReason(exe: exePath, env: env) { ensureDotNetFramework(prefix, env: env, reason: reason) }
 try? (desktopSize + (isSteamHelper(exePath) ? " helper" : "")).write(to: desktopMarker, atomically: true, encoding: .utf8)
 
 // Steam's Stop button and quitting Steam end this process; take the game's processes down with it.
@@ -628,6 +725,50 @@ func stageBackend(_ prefix: URL, backendDir: String?) {
     }
 }
 
+/// The game's "DLSS through MetalFX" setting is on, it draws through D3DMetal 4, and the runtime has Apple's stand-ins.
+func dlssThroughMetalFX(_ env: [String: String]) -> Bool {
+    env["D3DM_ENABLE_METALFX"] == "1" && env["TESSERA_ACTIVE_GRAPHICS_BACKEND"] == "d3dmetal" && env["TESSERA_D3DMETAL"] != "3"
+        && FileManager.default.fileExists(atPath: runtime.root.appendingPathComponent(dlssFolder).appendingPathComponent("nvngx-on-metalfx.dll").path)
+}
+var dlssFolder: String { "lib/metalfx/x86_64-windows" }   // computed: main.swift's stored globals start in file order
+
+/// DLSS through MetalFX in the game's Windows folder: NVIDIA's NGX (inside a game's DLSS plugin) loads NVIDIA's core
+/// from the folder the registry names (NGXCore FullPath), and only with a valid signature. So Apple's signed stand-ins go
+/// into system32 as real files (Wine's 1 KB placeholders fail that check: CERT_E_UNTRUSTEDROOT). With the setting off,
+/// Tessera's copies and the registry entry come out again: the folder looks like one without an NVIDIA card.
+func stageDLSS(_ prefix: URL, env: [String: String]) {
+    let fm = FileManager.default
+    let apple = runtime.root.appendingPathComponent(dlssFolder)
+    let system32 = prefix.appendingPathComponent("drive_c/windows/system32")
+    let files = [("nvapi64.dll", "nvapi64.dll"), ("nvngx-on-metalfx.dll", "nvngx.dll"), ("nvngx-on-metalfx.dll", "_nvngx.dll")]
+    let key = #"HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore"#
+    func size(_ url: URL) -> Int? { (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int }
+    func hasKey() -> Bool {
+        let registry = (try? String(contentsOf: prefix.appendingPathComponent("system.reg"), encoding: .utf8)) ?? ""
+        return registry.contains(#"[Software\\NVIDIA Corporation\\Global\\NGXCore]"#)
+    }
+    var e = env
+    e["WINEDEBUG"] = "-all"
+    e["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;winedbg.exe=d"
+    if dlssThroughMetalFX(env) {
+        for (from, to) in files { stageFile(apple.appendingPathComponent(from), system32.appendingPathComponent(to)) }
+        if !hasKey() {
+            runProcess(runtime.loader, ["reg", "add", key, "/v", "FullPath", "/t", "REG_SZ", "/d", #"C:\Windows\System32"#, "/f"], env: e)
+            log("DLSS through MetalFX: Apple's NVIDIA stand-ins put into this game's Windows folder")
+        }
+        return
+    }
+    // setting off: only Tessera's own copies (Apple's files, by size) go; a game's or driver's own files stay
+    let ours = files.filter { from, to in
+        let s = size(system32.appendingPathComponent(to))
+        return s != nil && s == size(apple.appendingPathComponent(from))
+    }
+    guard !ours.isEmpty else { return }
+    for (_, to) in ours { try? fm.removeItem(at: system32.appendingPathComponent(to)) }
+    if hasKey() { runProcess(runtime.loader, ["reg", "delete", key, "/f"], env: e) }
+    log("DLSS through MetalFX: off, Apple's NVIDIA stand-ins taken out of this game's Windows folder")
+}
+
 /// Steam passes the client's program folder (…/Steam.AppBundle/Steam/Contents/MacOS) as STEAM_COMPAT_CLIENT_INSTALL_PATH;
 /// the Steam root with steamapps is four levels up.
 func steamClientFolders() -> (root: URL, binaries: URL) {
@@ -665,16 +806,52 @@ func writeLibraryFolders(steamDir: URL, client: URL) {
     try? vdf.write(to: dir.appendingPathComponent("libraryfolders.vdf"), atomically: true, encoding: .utf8)
 }
 
+/// Valve's Windows Steam files (ValveFiles.swift): Tessera's own download, else a set another tool put into Steam's
+/// legacycompat folder; nil when this Mac has neither. TESSERA_TEST_NO_VALVE_FILES=1 pretends there are none and
+/// that they cannot be downloaded (testing the stand-ins).
+func valveLegacyFolder() -> URL? {
+    if env["TESSERA_TEST_NO_VALVE_FILES"] == "1" { return nil }
+    if valveFilesAreDownloaded() { return valveFilesFolder }
+    let steams = steamClientFolders().binaries.appendingPathComponent("legacycompat")
+    return valveFilesAreIn(steams) ? steams : nil
+}
+
+/// The app downloads Valve's files as soon as it opens; this is for a game started before the app ever did.
+func ensureValveFiles() {
+    guard valveLegacyFolder() == nil, env["TESSERA_TEST_NO_VALVE_FILES"] != "1" else { return }
+    log("Valve's Steam files for Windows games are not on this Mac yet (the Mac Steam client does not include them); downloading them from Valve now (29 MB, once)")
+    let started = Date()
+    if let failure = downloadValveFiles(maxTime: 300) {
+        log("Valve's Steam files: \(failure). Tessera's stand-ins are used for now; the download is tried again at the next start")
+    } else {
+        log("Valve's Steam files downloaded in \(Int(Date().timeIntervalSince(started))) s")
+    }
+}
+
+/// Steam names its script runner inside its own legacycompat folder, and the runner starts its helper as
+/// "legacycompat\\SteamService.exe" from Steam's folder: the layout of the Linux client, which has Valve's files there.
+/// So Steam's legacycompat folder on the Mac gets copies of the files Tessera downloaded (Steam makes that folder
+/// itself, for the script it hands over; "Remove from Steam" takes the copies out again).
+func mirrorValveFilesIntoSteam() {
+    guard env["TESSERA_TEST_NO_VALVE_FILES"] != "1", valveFilesAreDownloaded() else { return }
+    let target = steamClientFolders().binaries.appendingPathComponent("legacycompat")
+    try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+    for file in valveFiles {
+        stageFile(valveFilesFolder.appendingPathComponent(file.name), target.appendingPathComponent(file.name))
+    }
+}
+
 func stageSteam(_ prefix: URL) -> URL {
     let fm = FileManager.default
     let bridge = runtime.root.appendingPathComponent("lib/tessera-steam")
     let steamDir = prefix.appendingPathComponent("drive_c/Program Files (x86)/Steam")
     try? fm.createDirectory(at: steamDir, withIntermediateDirectories: true)
-    // The Steam folder gets Valve's real Windows files, which the Mac Steam client ships for this purpose
-    // (legacycompat): some games check that steamclient.dll carries Valve's signature before loading it. Tessera's
-    // Wine loads the bridge (lsteamclient) whenever a game loads steamclient, so the real ones never run.
+    // The Steam folder gets Valve's real Windows files: some games check that steamclient.dll carries Valve's
+    // signature before loading it. The Mac Steam client does not include them, so Tessera downloads them from Valve
+    // (ValveFiles.swift). Tessera's Wine loads the bridge (lsteamclient) whenever a game loads steamclient, so the
+    // real ones never run.
     let client = steamClientFolders()
-    let legacy = client.binaries.appendingPathComponent("legacycompat")
+    let legacy = valveLegacyFolder() ?? client.binaries.appendingPathComponent("legacycompat")
     for name in ["steamclient.dll", "steamclient64.dll", "Steam.dll"] {
         let real = legacy.appendingPathComponent(name)
         if fm.fileExists(atPath: real.path) {
@@ -686,7 +863,8 @@ func stageSteam(_ prefix: URL) -> URL {
                 stageFile(real, wow64.appendingPathComponent("steam.dll"))
             }
         } else if name != "Steam.dll" {
-            // no legacycompat folder: the bridge itself stands in (games that check signatures will refuse it)
+            // Valve's files could not be downloaded: the bridge itself stands in (games that check signatures
+            // refuse it)
             let arch = name == "steamclient.dll" ? "i386-windows" : "x86_64-windows"
             stageFile(bridge.appendingPathComponent("\(arch)/lsteamclient.dll"), steamDir.appendingPathComponent(name))
         }
@@ -753,8 +931,11 @@ func migrateUserPaths(_ prefix: URL) {
     }
 }
 
+ensureValveFiles()
+mirrorValveFilesIntoSteam()
 let steamExe = stageSteam(prefix)
 stageBackend(prefix, backendDir: env["TESSERA_BACKEND_DIR"])
+stageDLSS(prefix, env: env)
 migrateUserPaths(prefix)
 // Steam starts tools in the working folder the program expects (a game's install folder, or Steam's own folder for
 // install scripts, which name their files relative to it); only without one is the program's folder used.
@@ -853,6 +1034,7 @@ if URL(fileURLWithPath: exePath).lastPathComponent.lowercased() == "iscriptevalu
     quietInstallScript(gameDir.appendingPathComponent(arg.replacingOccurrences(of: "\\", with: "/")))
 }
 log("runtime \(runtime.root.path)")
+log("version \(tesseraVersion()) on \(systemSummary())")
 let tesseraVars = env.keys.filter { $0.hasPrefix("TESSERA_") }.sorted().map { "\($0)=\(env[$0]!)" }
 if !tesseraVars.isEmpty { log("settings \(tesseraVars.joined(separator: " "))") }
 log("prefix  \(prefix.path)")
@@ -875,6 +1057,14 @@ let rendererArgs = beamNGRendererArgs(exe: exePath, env: env)
 if !rendererArgs.isEmpty {
     launchArgs += rendererArgs
     log("BeamNG engine: Direct3D 11 renderer (\(rendererArgs.joined(separator: " ")))")
+}
+// Steam runs a game's first-start scripts with Valve's iscriptevaluator.exe, which the Mac client does not have
+// (mirrorValveFilesIntoSteam puts it there). Without it there is nothing to run: Steam is told so and asks again at
+// the next start.
+if URL(fileURLWithPath: exePath).lastPathComponent.lowercased() == "iscriptevaluator.exe",
+   !FileManager.default.fileExists(atPath: exePath) {
+    log("Steam's first-start step for this game is skipped: Valve's script runner is not on this Mac (its download failed, see above). Steam asks again at the next start")
+    exit(1)
 }
 log("start   \(exePath) \(launchArgs.joined(separator: " "))")
 let status = runProcess(runtime.loader, ["start.exe", "/wait", "/unix", steamExe.path, windowsPath(forUnix: exePath)] + launchArgs,

@@ -87,11 +87,13 @@ if not os.path.isdir(lic) or len(os.listdir(lic)) < 10:
 # Every program and library must run on the oldest macOS the app states (LSMinimumSystemVersion). 1.2.9 shipped Wine's
 # loader and the Steam bridge marked for macOS 27.2 (built without a deployment target); on any older macOS every
 # Windows program then died at start (exit code 11). Third parties' own minimums are listed and kept.
-OWN_MINIMUM_EXCEPTIONS = {
-    # Apple's D3DMetal (unmodified): Apple's shader container library needs macOS 15.4
-    "Contents/Resources/Runtime/lib64/apple_gptk/external/D3DMetal.framework/Versions/A/Resources/libdxccontainer.dylib",
-    # DXMT's Metal bridge is made for macOS 15
-    "Contents/Resources/Runtime/lib/dxmt/x86_64-unix/winemetal.so",
+OWN_MINIMUM = {
+    # Apple's D3DMetal (unmodified): its shader container library is made for macOS 26.4 (D3DMetal 4.0 beta 3) and for
+    # macOS 15.4 (D3DMetal 3.0). The launcher picks the D3DMetal version by the Mac's macOS (tessera-run/main.swift).
+    "Contents/Resources/Runtime/lib64/apple_gptk/external/D3DMetal.framework/Versions/A/Resources/libdxccontainer.dylib": "26.4",
+    "Contents/Resources/Runtime/lib64/apple_gptk3/external/D3DMetal.framework/Versions/A/Resources/libdxccontainer.dylib": "15.4",
+    # DXMT's Metal bridge is made for macOS 15 (the launcher chooses DXMT by itself only there)
+    "Contents/Resources/Runtime/lib/dxmt/x86_64-unix/winemetal.so": "15.0",
 }
 plist = subprocess.run(["defaults", "read", os.path.join(app, "Contents/Info.plist"), "LSMinimumSystemVersion"],
                        capture_output=True, text=True).stdout.strip() or "11.0"
@@ -115,8 +117,8 @@ for root, dirs, files in os.walk(app):
             elif re.search(r"cmd LC_VERSION_MIN_MACOSX\n", block):
                 mins += re.findall(r"\n\s*version (\d+\.\d+(?:\.\d+)?)", block)
         rel = os.path.relpath(path, app)
-        if mins and max(version_tuple(m) for m in mins) > version_tuple(plist) and rel not in OWN_MINIMUM_EXCEPTIONS:
-            problems.append(f"needs macOS {max(mins, key=version_tuple)} (the app states {plist}): {rel}")
+        if mins and max(version_tuple(m) for m in mins) > version_tuple(OWN_MINIMUM.get(rel, plist)):
+            problems.append(f"needs macOS {max(mins, key=version_tuple)} (allowed: {OWN_MINIMUM.get(rel, plist)}): {rel}")
         machos.append((path, rel))
 
 # No program or library may call a system function that an older macOS does not have. The runtime is built on the
@@ -135,7 +137,8 @@ WEAK_OK = {
 }
 WEAK_OK_FILES = (
     # other makers' libraries, which check versions themselves: Apple's D3DMetal, MoltenVK, DXMT's Metal bridge
-    "Contents/Resources/Runtime/lib64/apple_gptk/", "Contents/Resources/Runtime/lib64/libMoltenVK.dylib",
+    "Contents/Resources/Runtime/lib64/apple_gptk/", "Contents/Resources/Runtime/lib64/apple_gptk3/",
+    "Contents/Resources/Runtime/lib64/libMoltenVK.dylib",
     "Contents/Resources/Runtime/lib64/dxvk/libMoltenVK.dylib", "Contents/Resources/Runtime/lib/dxmt/x86_64-unix/winemetal.so",
     # Wine's OpenCL: OpenCL 1.0 functions Apple marks as deprecated, present in every macOS
     "Contents/Resources/Runtime/lib/wine/x86_64-unix/opencl.so",
