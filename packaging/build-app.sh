@@ -20,7 +20,7 @@ BIN="$(cd "$ROOT/app" && swift build -c release --arch arm64 --show-bin-path)/Te
 
 echo "== Steam library and compatibility tool"
 (cd "$ROOT/steampatch/src" && clang -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 -O2 -Wall -dynamiclib \
-    -framework Foundation -framework AppKit -o ../build/tessera_steam.dylib tessera_steam.c hook.c activation.m)
+    -framework Foundation -framework AppKit -o ../build/tessera_steam.dylib tessera_steam.c guard.c hook.c activation.m)
 (cd "$ROOT/tool" && mkdir -p build \
     && swiftc -O -target arm64-apple-macos12.0 -o build/run-arm64 Sources/tessera-run/*.swift \
     && swiftc -O -target x86_64-apple-macos12.0 -o build/run-x86_64 Sources/tessera-run/*.swift \

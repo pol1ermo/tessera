@@ -122,7 +122,34 @@ enum SteamSetup {
     /// call of the same program. (Up to 1.2.11.1 any process with the client's path anywhere in its command line
     /// counted - a Terminal command, a script - and "quit Steam" then waited a minute for a program that was not
     /// Steam, or called "steam_osx -shutdown" with no Steam running, which starts Steam.)
-    static var steamIsRunning: Bool {
+    // MARK: - the games guard (tool/Sources/tessera-run/GamesGuard.swift tells the whole story)
+    //
+    // A Steam without Tessera's library removes the files of installed Windows games. While no Steam with the library
+    // runs, the games' install records are parked in <library>/steamapps/tessera-parked, where Steam does not look.
+    // The library puts them back when Steam starts and starts a guard that parks them when Steam ends; these calls
+    // are for the moments Tessera's window is involved.
+
+    /// The launcher that carries the guard: Steam's copy, or the one inside this app before the first set-up.
+    private static var guardTool: URL {
+        let installed = Paths.compatTool.appendingPathComponent("run")
+        return FileManager.default.isExecutableFile(atPath: installed.path) ? installed : Paths.bundledCompatTool.appendingPathComponent("run")
+    }
+
+    /// Parks the install records of Windows games unless a Steam with Tessera's library is running.
+    static func parkGames() {
+        run(guardTool.path, ["park-games"], timeout: 60)
+    }
+
+    /// Parking only helps when the Steam that starts next either has no Tessera library (then the games need the
+    /// protection) or has the library of this version, which puts the records back; an older library would not.
+    static var parkingIsSafe: Bool {
+        guard steamEnvironment()[insertKey] != nil else { return true }
+        return FileManager.default.contentsEqual(atPath: Paths.steamLibrary.path, andPath: Paths.bundledSteamLibrary.path)
+    }
+
+    /// Steam's own processes: the program is steam_osx (a helper merely started from that folder is not), and the
+    /// short-lived `-shutdown` call that tells a running Steam to quit does not count.
+    static var steamProcesses: [Int32] {
         func table(_ column: String) -> [Int32: String] {
             var rows: [Int32: String] = [:]
             for line in run("/bin/ps", ["-axww", "-o", "pid=,\(column)="]).output.split(whereSeparator: \.isNewline) {
@@ -133,11 +160,31 @@ enum SteamSetup {
             return rows
         }
         let programs = table("comm"), commands = table("args")
-        return programs.contains { pid, program in
-            (program == "steam_osx" || program.hasSuffix("/steam_osx"))
-                && !(commands[pid] ?? "").hasSuffix(" -shutdown")
+        return programs.filter { pid, program in
+            (program == "steam_osx" || program.hasSuffix("/steam_osx")) && !(commands[pid] ?? "").hasSuffix(" -shutdown")
+        }.keys.sorted()
+    }
+
+    /// A Steam that is running with a Tessera library from before the guard existed (Tessera was just updated) gets
+    /// its guard now, so the records are parked when that Steam ends.
+    static func guardRunningSteam() {
+        guard steamEnvironment()[insertKey]?.contains(Paths.steamLibrary.path) == true else { return }
+        let running = Paths.steamLibrary.deletingLastPathComponent().appendingPathComponent("running")
+        let fm = FileManager.default
+        for pid in steamProcesses where !fm.fileExists(atPath: running.appendingPathComponent("\(pid)").path) {
+            try? fm.createDirectory(at: running, withIntermediateDirectories: true)
+            fm.createFile(atPath: running.appendingPathComponent("\(pid)").path, contents: nil)
+            let task = Process()
+            task.executableURL = guardTool
+            task.arguments = ["steam-guard", "\(pid)"]
+            task.standardInput = FileHandle.nullDevice
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+            try? task.run()                       // it detaches itself and outlives this app
         }
     }
+
+    static var steamIsRunning: Bool { !steamProcesses.isEmpty }
 
     /// Asks the running Steam client to quit and waits for it.
     static func quitSteam() -> Bool {
@@ -188,6 +235,7 @@ enum SteamSetup {
         if !current { try? installFiles() }
         run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", Paths.bundledRuntime.path,
                                Paths.steamLibrary.deletingLastPathComponent().path, Paths.compatTool.path])
+        guardRunningSteam()
     }
 
     private static func replace(_ dst: URL, with src: URL) throws {
@@ -309,6 +357,9 @@ enum SteamSetup {
     static func uninstall() throws {
         guard quitSteam() else { throw SetupError.steamRunning }
         let fm = FileManager.default
+        // Steam without Tessera would remove the files of installed Windows games: their install records are parked
+        // (steamapps/tessera-parked) before Steam can start again; a later set-up brings them back
+        parkGames()
         // Steam may have updated its launcher since: then it is Valve's original already and the old backup is stale.
         // A Steam.app without its Info.plist is not that case: the backup is what makes it whole again.
         if steamEnvironment()[insertKey] != nil || steamAppIsIncomplete {

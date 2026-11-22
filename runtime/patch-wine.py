@@ -1235,6 +1235,35 @@ exact("dlls/win32u/window.c", [
      '    virtual_rect.right  = max( virtual_rect.right, seen_rect.right );\n'
      '    virtual_rect.bottom = max( virtual_rect.bottom, seen_rect.bottom );\n')])
 
+# 4am. A game may keep up to 20 ms of sound queued, not only 10. IAudioClient3 lets a game ask how long the sound
+#      engine's period may be; Wine answered "10 ms at most" (its default period). Godot 4 asks for its own
+#      setting (15 ms), is cut down to 10, and then never keeps more than that queued. Windows empties a stream
+#      once per 10 ms, so a game has the whole period to refill; macOS pulls every 5.3 ms (4aj), so two pulls
+#      without a refill between them left the second one 0.7 ms short: Buckshot Roulette lost 8 to 49 chunks at
+#      each start, whenever its sound thread was more than 5 ms late while the game loaded. With 20 ms allowed
+#      Godot gets the 15 ms it asks for and a late thread has 10.7 ms, as on Windows.
+exact("dlls/mmdevapi/client.c", [
+    ('    *max_period_frames     = *default_period_frames;\n',
+     '    /* Tessera: twice the default period, so a game that asks for more than 10 ms (Godot 4: 15 ms) gets it;\n'
+     '       the game keeps one period queued, and macOS pulls in smaller chunks than a Windows period */\n'
+     '    *max_period_frames     = 2 * *default_period_frames;\n')])
+
+# 4an. Dialogs are as large on the full-resolution desktop as on the Mac's own. A D3DMetal game's desktop is the
+#      screen's largest real mode (4u: 3456x2234 where the Mac's desktop is 2056x1329 points), so the game is sharp,
+#      but a plain Windows dialog, laid out for 96 dpi, was drawn 1:1 in those small pixels: the start window of
+#      old Unity games (The Forest) was 276 points wide instead of 460, and message boxes were as small. Telling
+#      the whole game "168 % scaling" (LogPixels) fixes the dialog and breaks games: Wine then shows programs that
+#      are not DPI-aware a smaller desktop (RUINER, Satisfactory and Bunny Guys! drew at 2061x1332) and
+#      Metamorphosis magnified its menu. A dialog takes its size from its font, so only that is enlarged, by the
+#      monitor's effective dpi over its raw dpi (96 * real / emulated); on the Mac-size desktop the two are equal.
+exact("dlls/user32/dialog.c", [
+    ('static HWND DIALOG_CreateIndirect( HINSTANCE hInst, LPCVOID dlgTemplate,\n',
+     "/* Tessera: a dialog takes its size from its font. On a desktop that is an emulated mode LARGER than the real one\n   (TESSERA_FULL_RESOLUTION: a D3DMetal game sees the screen's largest real mode, e.g. 3456x2234 over the Mac's\n   2056x1329 points) one desktop pixel is smaller than a point, and a dialog laid out for 96 dpi came out small.\n   There the monitor's raw dpi (96 * real / emulated) is below its effective dpi, and the font is enlarged by\n   that ratio, so the whole dialog is as large as on the Mac's own desktop. In every other case the two are equal\n   or the raw one is higher, and nothing changes. */\nstatic int tessera_scale_dialog_font( int pixels )\n{\n    POINT origin = {0, 0};\n    HMONITOR monitor = MonitorFromPoint( origin, MONITOR_DEFAULTTOPRIMARY );\n    UINT eff_x, eff_y, raw_x, raw_y;\n\n    if (monitor && NtUserGetDpiForMonitor( monitor, 0 /* MDT_EFFECTIVE_DPI */, &eff_x, &eff_y ) &&\n        NtUserGetDpiForMonitor( monitor, 2 /* MDT_RAW_DPI */, &raw_x, &raw_y ) && raw_y && raw_y < eff_y)\n        return MulDiv( pixels, eff_y, raw_y );\n    return pixels;\n}\n\nstatic HWND DIALOG_CreateIndirect( HINSTANCE hInst, LPCVOID dlgTemplate,\n"),
+    ('                hUserFont = CreateFontIndirectW( &ncMetrics.lfMessageFont );\n',
+     '                ncMetrics.lfMessageFont.lfHeight = tessera_scale_dialog_font( ncMetrics.lfMessageFont.lfHeight );\n                hUserFont = CreateFontIndirectW( &ncMetrics.lfMessageFont );\n'),
+    ('            int pixels = MulDiv(template.pointSize, GetDeviceCaps(dc , LOGPIXELSY), 72);\n',
+     '            int pixels = tessera_scale_dialog_font( MulDiv(template.pointSize, GetDeviceCaps(dc , LOGPIXELSY), 72) );\n')])
+
 
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")

@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "guard.h"
 #include "hook.h"
 
 #if defined(__arm64__)
@@ -391,6 +392,7 @@ __attribute__((constructor)) static void tessera_steam_init(void) {
     }
     if (strcmp(base, "steam_osx")) return;          // only the Steam client itself; other helpers inherit the variable
     tlog("loaded into %s", exe);
+    tessera_guard_start(tlog);                   // the games guard, before Steam reads its library (guard.c)
     // Mac Steam does not know its own folder yet when it scans for compatibility tools, so tell it where to look:
     // Tessera's own tool folder (next to this library inside Tessera.app) and Steam's compatibilitytools.d.
     if (!getenv("STEAM_EXTRA_COMPAT_TOOLS_PATHS")) {

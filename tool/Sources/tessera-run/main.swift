@@ -5,14 +5,25 @@
 //   run <exe> [args]                 start a helper (install scripts and the like) and wait for it
 //   getcompatpath <unix path>        print the Windows path Steam should use for a file
 //   getnativepath <windows path>     print the Unix path for a Windows path
+// Tessera's library inside Steam and Tessera's window also call it for the games guard (GamesGuard.swift).
 // Steam passes the game's context in the environment (STEAM_COMPAT_DATA_PATH, SteamAppId, Steam3Master, ...).
 import AppKit
 import Darwin
 import Foundation
 
+// Not about one game: keeping Steam away from installed Windows games while Tessera is not active in it
+// (GamesGuard.swift): `run steam-guard <steam pid>`, `run park-games`, `run unpark-games`, `run parked-games`.
+if CommandLine.arguments.count > 1, GamesGuard.verbs.contains(CommandLine.arguments[1]) {
+    exit(GamesGuard.main(Array(CommandLine.arguments.dropFirst())))
+}
+
 // MARK: - logging
 
 let appID = ProcessInfo.processInfo.environment["SteamAppId"] ?? ProcessInfo.processInfo.environment["STEAM_COMPAT_APP_ID"] ?? "0"
+// Steam's content log and where it ends now: a "Terminating" line for this game after this point is Steam's Stop button
+// (watchForSteamStop below).
+let steamContentLog = NSHomeDirectory() + "/Library/Application Support/Steam/logs/content_log.txt"
+let steamContentLogStart = ((try? FileManager.default.attributesOfItem(atPath: steamContentLog))?[.size] as? NSNumber)?.uint64Value ?? 0
 let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Tessera")
 try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
 let logURL = logDir.appendingPathComponent("game-\(appID).log")
@@ -696,6 +707,44 @@ for sig in [SIGTERM, SIGINT, SIGHUP] {
     src.resume()
     signalSources.append(src)
 }
+
+// Steam's Stop button. On the Mac, Stop ("Exit game? Unsaved game data may be lost", Confirm) sends the game nothing,
+// neither a signal nor a request to quit: Steam marks the game "Terminating", closes the game's connection to Steam
+// and then waits, showing "Stopping", until the game's processes are gone. A game that notices the lost connection
+// quits by itself (R.E.P.O.); most do not, and the player had to end them in Activity Monitor (GitHub issue 1).
+// Steam for Windows ends the game's process outright, so this launcher does it: Steam writes the state change to its
+// content log ("AppID 1755910 state changed : Fully Installed,App Running,Terminating,"); when that line appears for
+// this game, the game gets 3 seconds to close by itself and then every program of its Windows folder is ended.
+func watchForSteamStop() {
+    guard appID != "0" else { return }
+    let needle = "AppID \(appID) state changed : "
+    Thread.detachNewThread {
+        var offset = steamContentLogStart
+        while true {
+            Thread.sleep(forTimeInterval: 0.5)
+            guard let handle = FileHandle(forReadingAtPath: steamContentLog) else { continue }
+            let size = (try? handle.seekToEnd()) ?? 0
+            if size < offset { offset = 0 }                        // Steam started a new log file
+            guard size > offset, (try? handle.seek(toOffset: offset)) != nil else { try? handle.close(); continue }
+            let data = handle.readDataToEndOfFile()
+            try? handle.close()
+            // whole lines only; an unfinished last line is read again the next time
+            guard let lastNewline = data.lastIndex(of: 0x0A) else { continue }
+            let whole = data[data.startIndex...lastNewline]
+            offset += UInt64(whole.count)
+            let stopped = String(decoding: whole, as: UTF8.self).split(separator: "\n")
+                .contains { $0.contains(needle) && $0.contains("Terminating") }
+            if stopped {
+                log("Steam's Stop button: the game gets 3 s to close by itself")
+                Thread.sleep(forTimeInterval: 3)
+                log("Steam's Stop button: ending every program of the game's Windows folder")
+                killPrefix(env)
+                exit(0)
+            }
+        }
+    }
+}
+watchForSteamStop()
 
 // MARK: Steam bridge in the prefix
 // steam_api(64).dll looks for steamclient(64).dll where the registry says Steam is installed; the copies there only

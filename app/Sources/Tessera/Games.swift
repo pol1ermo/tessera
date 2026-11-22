@@ -55,11 +55,18 @@ enum GameLibrary {
         let setToTessera = gamesSetToTessera()
         for lib in libraries() {
             let apps = lib.appendingPathComponent("steamapps")
-            guard let files = try? fm.contentsOfDirectory(atPath: apps.path) else { continue }
-            for f in files where f.hasPrefix("appmanifest_") && f.hasSuffix(".acf") {
-                guard let kv = keyValues(apps.appendingPathComponent(f)),
+            // while Steam is closed the games' install records are parked next door (the games guard, SteamSetup)
+            let parked = apps.appendingPathComponent("tessera-parked")
+            var manifests: [URL] = []
+            for folder in [apps, parked] {
+                for f in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] where f.hasPrefix("appmanifest_") && f.hasSuffix(".acf") {
+                    manifests.append(folder.appendingPathComponent(f))
+                }
+            }
+            for manifest in manifests {
+                guard let kv = keyValues(manifest),
                       let id = kv["appid"], let name = kv["name"], let dir = kv["installdir"] else { continue }
-                if id == "228980" { continue }      // Steamworks Common Redistributables
+                if id == "228980" || games.contains(where: { $0.id == id }) { continue }      // Steamworks Common Redistributables
                 let install = apps.appendingPathComponent("common/\(dir)")
                 guard isWindowsGame(install, macFilesAllowed: setToTessera.contains(id)) else { continue }
                 let played = Double(kv["LastPlayed"] ?? "").flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }

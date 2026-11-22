@@ -68,9 +68,7 @@ struct SteamView: View {
                     .foregroundStyle(.secondary)
 
                 statusCard
-                updateCard
-                runtimesCard
-
+                // what the set-up is doing or why it stopped belongs right under its card, where it is seen without scrolling
                 if let busy = model.busy {
                     HStack(spacing: 10) { ProgressView().controlSize(.small); Text(busy) }
                 }
@@ -90,6 +88,10 @@ struct SteamView: View {
                     .background(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.6)))
                 }
 
+                updateCard
+                runtimesCard
+
+
                 howItWorks
             }
             .padding(28)
@@ -98,7 +100,9 @@ struct SteamView: View {
         .confirmationDialog("Remove Tessera from Steam?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { model.uninstall() }
         } message: {
-            Text("Steam will quit and get its original files back. Your games and their saves stay where they are.")
+            Text("Steam will quit and get its original files back. Your Windows games and their saves stay on this Mac: "
+                 + "Tessera keeps the games out of Steam's sight, because Steam on its own would remove their files. "
+                 + "Setting up again brings them back. To free the space instead, uninstall the games in Steam first.")
         }
     }
 
@@ -117,6 +121,13 @@ struct SteamView: View {
                 Label("Not set up in Steam yet", systemImage: "circle.dashed").font(.headline)
                 Toggle("Use Tessera for all Windows games", isOn: $forAllGames)
                 Text("Steam will quit for a moment and open again.").font(.callout).foregroundStyle(.secondary)
+                if !model.games.isEmpty {
+                    // Steam without Tessera sees installed Windows games as not belonging on a Mac and empties their
+                    // folders within minutes of starting (seen 22 Nov 2026: "removed depots", "0 mounted depots")
+                    Label("Steam on its own removes the files of installed Windows games, so Tessera keeps your \(model.games.count) Windows game\(model.games.count == 1 ? "" : "s") out of Steam's sight until it is set up. They are not in Steam's library until then.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange)
+                }
                 Button("Set up in Steam") { model.install(forAllGames: forAllGames) }
                     .buttonStyle(.borderedProminent).disabled(model.busy != nil)
             case .installed:

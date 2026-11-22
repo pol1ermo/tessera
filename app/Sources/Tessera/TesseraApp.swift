@@ -54,7 +54,13 @@ final class AppModel: ObservableObject {
 
     init() {
         refresh()
-        Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate(); Updater.cleanUp() }
+        Task.detached(priority: .utility) {
+            SteamSetup.syncAfterUpdate()
+            Updater.cleanUp()
+            // Steam closed (a restart of the Mac leaves the records visible): park them, so that a Steam started without
+            // Tessera cannot remove the games' files; with Tessera's library running this does nothing
+            if SteamSetup.steamProcesses.isEmpty, SteamSetup.parkingIsSafe { SteamSetup.parkGames() }
+        }
         // as soon as Tessera opens: what is missing comes from Microsoft and Valve now, not at a game's first start
         downloadRuntimes()
         // a newer Tessera: asked at most every six hours, and not at all when the person switched the check off

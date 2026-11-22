@@ -121,7 +121,14 @@ enum Updater {
     }
 
     /// Downloads the release's disk image and checks its size and SHA-256 against the signed manifest.
+    /// An update replaces the runtime a running game is using, so both steps refuse while one is open:
+    /// the download (so nobody waits for 450 MB only to be told to close the game) and the swap itself.
+    static func refuseWhileAGameRuns() throws {
+        guard !gameIsRunning else { throw Failure("a Windows game is running. Close the game, then update") }
+    }
+
     static func download(_ m: UpdateManifest, progress: ((Int64) -> Void)? = nil) throws -> URL {
+        try refuseWhileAGameRuns()
         let fm = FileManager.default
         try fm.createDirectory(at: downloads, withIntermediateDirectories: true)
         let done = downloads.appendingPathComponent(m.dmg), part = downloads.appendingPathComponent(m.dmg + ".part")
@@ -199,7 +206,7 @@ enum Updater {
         guard app.pathExtension == "app", !app.path.contains("/AppTranslocation/") else {
             throw Failure("Tessera has to be in your Applications folder to update itself")
         }
-        guard !gameIsRunning else { throw Failure("a Windows game is running. Close the game, then update") }
+        try refuseWhileAGameRuns()
         let folder = app.deletingLastPathComponent()
         guard fm.isWritableFile(atPath: folder.path) else {
             throw Failure("Tessera may not write to \(folder.path). Download the new version from the release page instead")
