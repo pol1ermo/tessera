@@ -839,6 +839,403 @@ exact("dlls/ntdll/unix/server.c", [('#include "config.h"\n', NO_PIPE2_4AH)])
 exact("dlls/ntdll/unix/process.c", [('#include "config.h"\n', NO_PIPE2_4AH)])
 
 
+# 4ai. Cursor positions a game sets come back exactly, and movement after it is measured from there. On a desktop
+#      that is larger than the Mac's (an emulated display mode above the Mac's desktop size, the default for
+#      D3DMetal games: 4u), several of the game's pixels share one position of the real desktop. SetCursorPos(1728,
+#      1117) on a 3456x2234 desktop became real position (1028,665), and that was reported back as (1728,1118), by
+#      GetCursorPos and by every mouse message in that row. A game that puts the cursor back in the middle and reads
+#      how far it has moved (mouse look without raw input) saw one pixel of downward movement that never happened,
+#      with every mouse event; a program that re-centres until the cursor is in the middle never stopped. win32u
+#      now remembers the last position set and the real position it became, and reports cursor positions shifted
+#      by that rounding difference (at most a pixel or two): the set position comes back as it was set, and movement
+#      from it is exact in both directions. (perf/tools/mousetest measures it.)
+exact("dlls/win32u/win32u_private.h", [
+    ('extern RECT map_rect_virt_to_raw( RECT rect, UINT dpi_from );\n',
+     'extern RECT map_rect_virt_to_raw( RECT rect, UINT dpi_from );\n'
+     'extern POINT map_cursor_pos_raw_to_virt( POINT raw, UINT dpi );\n')])
+exact("dlls/win32u/input.c", [
+    ('#include "ntstatus.h"\n#define WIN32_NO_STATUS\n#include "win32u_private.h"\n#include "ntuser_private.h"\n'
+     '#include "wine/server.h"\n#include "wine/debug.h"\n#include "kbd.h"\n',
+     '#include <pthread.h>\n\n'
+     '#include "ntstatus.h"\n#define WIN32_NO_STATUS\n#include "win32u_private.h"\n#include "ntuser_private.h"\n'
+     '#include "wine/server.h"\n#include "wine/debug.h"\n#include "kbd.h"\n'),
+    ('/***********************************************************************\n'
+     ' *\t     NtUserSetCursorPos (win32u.@)\n'
+     ' */\n',
+     '/* Tessera: the last position a program set with SetCursorPos, in its own coordinates, and the raw desktop\n'
+     ' * position it became. Several program pixels can share one raw position (a desktop mode larger than the real\n'
+     ' * desktop), so mapping raw positions back gave a neighbouring pixel: for the position just set, and for every\n'
+     ' * mouse movement measured from it. */\n'
+     'static pthread_mutex_t set_cursor_lock = PTHREAD_MUTEX_INITIALIZER;\n'
+     'static POINT set_cursor_virt, set_cursor_raw;\n'
+     'static UINT set_cursor_dpi;\n'
+     'static BOOL set_cursor_valid;\n'
+     '\n'
+     'static UINT cursor_effective_dpi( UINT dpi )\n'
+     '{\n'
+     '    return dpi ? dpi : get_system_dpi();\n'
+     '}\n'
+     '\n'
+     '/* maps a raw cursor position to the coordinates programs see. While the cursor position a program set is\n'
+     ' * remembered, positions are shifted by the rounding difference of that position, so that it comes back\n'
+     ' * exactly as it was set and movement is measured from it. */\n'
+     'POINT map_cursor_pos_raw_to_virt( POINT raw, UINT dpi )\n'
+     '{\n'
+     '    RECT rect = {raw.x, raw.y, raw.x, raw.y}, anchor, virtual_rect;\n'
+     '    POINT pos, virt, anchor_raw, bias;\n'
+     '    BOOL valid;\n'
+     '\n'
+     '    rect = map_rect_raw_to_virt( rect, dpi );\n'
+     '    pos.x = rect.left;\n'
+     '    pos.y = rect.top;\n'
+     '\n'
+     '    pthread_mutex_lock( &set_cursor_lock );\n'
+     '    valid = set_cursor_valid && cursor_effective_dpi( dpi ) == set_cursor_dpi;\n'
+     '    virt = set_cursor_virt;\n'
+     '    anchor_raw = set_cursor_raw;\n'
+     '    pthread_mutex_unlock( &set_cursor_lock );\n'
+     '    if (!valid) return pos;\n'
+     '\n'
+     '    /* does the remembered pair still hold for the display mode of this moment? */\n'
+     '    SetRect( &anchor, virt.x, virt.y, virt.x, virt.y );\n'
+     '    anchor = map_rect_virt_to_raw( anchor, dpi );\n'
+     '    if (anchor.left != anchor_raw.x || anchor.top != anchor_raw.y) return pos;\n'
+     '\n'
+     '    SetRect( &anchor, anchor_raw.x, anchor_raw.y, anchor_raw.x, anchor_raw.y );\n'
+     '    anchor = map_rect_raw_to_virt( anchor, dpi );\n'
+     '    bias.x = anchor.left - virt.x;\n'
+     '    bias.y = anchor.top - virt.y;\n'
+     '    if (!bias.x && !bias.y) return pos;\n'
+     '    if (abs( bias.x ) > 4 || abs( bias.y ) > 4) return pos;\n'
+     '\n'
+     '    virtual_rect = get_virtual_screen_rect( dpi, MDT_DEFAULT );\n'
+     '    pos.x = max( virtual_rect.left, min( virtual_rect.right - 1, pos.x - bias.x ));\n'
+     '    pos.y = max( virtual_rect.top, min( virtual_rect.bottom - 1, pos.y - bias.y ));\n'
+     '    return pos;\n'
+     '}\n'
+     '\n'
+     '/***********************************************************************\n'
+     ' *\t     NtUserSetCursorPos (win32u.@)\n'
+     ' */\n'),
+    ('    SERVER_END_REQ;\n'
+     '    if (ret && (prev_x != new_x || prev_y != new_y)) user_driver->pSetCursorPos( new_x, new_y );\n'
+     '    return ret;\n',
+     '    SERVER_END_REQ;\n'
+     '    if (ret)\n'
+     '    {\n'
+     '        /* Tessera: remembered only when the cursor went exactly there (not held back by a clip rectangle) */\n'
+     '        pthread_mutex_lock( &set_cursor_lock );\n'
+     '        set_cursor_valid = new_x == rect.left && new_y == rect.top;\n'
+     '        set_cursor_virt.x = x;\n'
+     '        set_cursor_virt.y = y;\n'
+     '        set_cursor_raw.x = new_x;\n'
+     '        set_cursor_raw.y = new_y;\n'
+     '        set_cursor_dpi = cursor_effective_dpi( get_thread_dpi() );\n'
+     '        pthread_mutex_unlock( &set_cursor_lock );\n'
+     '    }\n'
+     '    if (ret && (prev_x != new_x || prev_y != new_y)) user_driver->pSetCursorPos( new_x, new_y );\n'
+     '    return ret;\n'),
+    ('    if (!ret) return FALSE;\n'
+     '\n'
+     '    SetRect( &rect, pt->x, pt->y, pt->x, pt->y );\n'
+     '    rect = map_rect_raw_to_virt( rect, get_thread_dpi() );\n'
+     '    *pt = *(POINT *)&rect.left;\n'
+     '    return ret;\n',
+     '    if (!ret) return FALSE;\n'
+     '\n'
+     '    *pt = map_cursor_pos_raw_to_virt( *pt, get_thread_dpi() );   /* Tessera: see NtUserSetCursorPos */\n'
+     '    return ret;\n')])
+exact("dlls/win32u/message.c", [
+    ('    rect = map_rect_raw_to_virt( rect, get_thread_dpi() );\n'
+     '    msg->pt.x = rect.left;\n'
+     '    msg->pt.y = rect.top;\n'
+     '\n'
+     '    if (msg->message == WM_INPUT || msg->message == WM_INPUT_DEVICE_CHANGE)\n',
+     '    /* Tessera: measured from the position the program last set itself (see NtUserSetCursorPos) */\n'
+     '    msg->pt = map_cursor_pos_raw_to_virt( msg->pt, get_thread_dpi() );\n'
+     '\n'
+     '    if (msg->message == WM_INPUT || msg->message == WM_INPUT_DEVICE_CHANGE)\n')])
+
+
+# 4aj. Crackling sound. macOS collects sound from a program in chunks (512 frames at a time at 44.1 or 48 kHz: 10.7
+#      ms). Wine's CoreAudio driver hands over what the game has queued and fills the rest of the chunk with silence.
+#      A game that queues one 10 ms period at a time (480 frames) is regularly a few frames short of a 512-frame
+#      chunk, and each of those gaps is a click: the crackle people cure by switching the Mac's output to 96 kHz in
+#      Audio MIDI Setup (there one chunk is 5.3 ms, so the game always has enough). The driver now asks macOS for
+#      chunks of that length itself, at any sample rate (256 frames up to 48 kHz), so no system setting has to
+#      change. TESSERA_AUDIO_IO_FRAMES=0 leaves macOS's size, a number sets one; TESSERA_AUDIO_LOG=<file> writes how
+#      many chunks came up short (start / every 5 s / end of each sound stream).
+exact("dlls/winecoreaudio.drv/coreaudio.c", [
+    ('#include <os/lock.h>\n', '#include <os/lock.h>\n#include <pthread.h>\n'),
+    ('    WAVEFORMATEX *fmt;\n'
+     '    BYTE *local_buffer, *cap_buffer, *wrap_buffer, *resamp_buffer, *tmp_buffer;\n'
+     '};\n',
+     '    WAVEFORMATEX *fmt;\n'
+     '    BYTE *local_buffer, *cap_buffer, *wrap_buffer, *resamp_buffer, *tmp_buffer;\n'
+     '\n'
+     '    /* Tessera: the size of the chunks macOS collects, and how often the game had less than a chunk queued */\n'
+     '    UINT32 io_frames, io_frames_before, max_pull_frames;\n'
+     '    UINT64 pulls, short_pulls, short_frames, empty_pulls, writes;\n'
+     '    double last_log;\n'
+     '};\n'),
+    ('/* CA is pulling data from us */\n'
+     'static OSStatus ca_render_cb(',
+     '/* Tessera: TESSERA_AUDIO_LOG=<file> */\n'
+     'static FILE *tessera_audio_file;\n'
+     '\n'
+     'static void tessera_open_audio_log(void)\n'
+     '{\n'
+     '    const char *path = getenv("TESSERA_AUDIO_LOG");\n'
+     '    if(path && *path) tessera_audio_file = fopen(path, "a");\n'
+     '}\n'
+     '\n'
+     'static FILE *tessera_audio_log(void)\n'
+     '{\n'
+     '    static pthread_once_t once = PTHREAD_ONCE_INIT;\n'
+     '\n'
+     '    pthread_once(&once, tessera_open_audio_log);\n'
+     '    return tessera_audio_file;\n'
+     '}\n'
+     '\n'
+     'static double tessera_audio_now(void)\n'
+     '{\n'
+     '    struct timespec ts;\n'
+     '    clock_gettime(CLOCK_UPTIME_RAW, &ts);\n'
+     '    return ts.tv_sec + ts.tv_nsec / 1e9;\n'
+     '}\n'
+     '\n'
+     'static void tessera_log_stream(struct coreaudio_stream *stream, const char *what)\n'
+     '{\n'
+     '    FILE *file = tessera_audio_log();\n'
+     '\n'
+     '    if(!file || stream->flow != eRender) return;\n'
+     '    fprintf(file, "%s %.3f stream %p: game %u Hz %u ch, device %.0f Hz, chunk %u frames (macOS had %u, largest seen %u), "\n'
+     '            "game period %u, buffer %u | chunks %llu, short %llu (%llu frames of silence), nothing queued %llu, writes %llu\\n",\n'
+     '            what, tessera_audio_now(), stream, (unsigned)stream->fmt->nSamplesPerSec, (unsigned)stream->fmt->nChannels,\n'
+     '            stream->dev_desc.mSampleRate, (unsigned)stream->io_frames, (unsigned)stream->io_frames_before,\n'
+     '            (unsigned)stream->max_pull_frames, (unsigned)stream->period_frames, (unsigned)stream->bufsize_frames,\n'
+     '            (unsigned long long)stream->pulls, (unsigned long long)stream->short_pulls,\n'
+     '            (unsigned long long)stream->short_frames, (unsigned long long)stream->empty_pulls,\n'
+     '            (unsigned long long)stream->writes);\n'
+     '    fflush(file);\n'
+     '}\n'
+     '\n'
+     '/* Tessera: asks macOS for chunks of about 5.3 ms (256 frames up to 48 kHz, 512 up to 96 kHz), the length that\n'
+     ' * the 96 kHz setting gives. A game that queues 10 ms of sound at a time then always has a full chunk ready. */\n'
+     'static void tessera_set_io_frames(struct coreaudio_stream *stream)\n'
+     '{\n'
+     '    const char *env = getenv("TESSERA_AUDIO_IO_FRAMES");\n'
+     '    UInt32 frames = 256, current = 0, size = sizeof(current), range_size;\n'
+     '    AudioValueRange range = {0, 0};\n'
+     '    Float64 rate = stream->dev_desc.mSampleRate > 0 ? stream->dev_desc.mSampleRate : 48000;\n'
+     '    OSStatus sc;\n'
+     '\n'
+     '    if(AudioUnitGetProperty(stream->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0,\n'
+     '                            &current, &size) != noErr)\n'
+     '        current = 0;\n'
+     '    stream->io_frames = stream->io_frames_before = current;\n'
+     '\n'
+     '    if(env && atoi(env) <= 0) return;   /* macOS\'s own size */\n'
+     '    if(env) frames = atoi(env);\n'
+     '    else while(rate > 48000.5 * (frames / 256)) frames *= 2;\n'
+     '\n'
+     '    range_size = sizeof(range);\n'
+     '    if(AudioUnitGetProperty(stream->unit, kAudioDevicePropertyBufferFrameSizeRange, kAudioUnitScope_Global, 0,\n'
+     '                            &range, &range_size) == noErr && range.mMinimum > 0){\n'
+     '        if(frames < range.mMinimum) frames = range.mMinimum;\n'
+     '        if(frames > range.mMaximum) frames = range.mMaximum;\n'
+     '    }\n'
+     '    if(!env && current && current <= frames) return;   /* short enough already */\n'
+     '\n'
+     '    sc = AudioUnitSetProperty(stream->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0,\n'
+     '                              &frames, sizeof(frames));\n'
+     '    if(sc != noErr){\n'
+     '        WARN("Couldn\'t set the device buffer to %u frames: %x\\n", (unsigned)frames, (int)sc);\n'
+     '        return;\n'
+     '    }\n'
+     '    size = sizeof(current);\n'
+     '    if(AudioUnitGetProperty(stream->unit, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0,\n'
+     '                            &current, &size) == noErr)\n'
+     '        stream->io_frames = current;\n'
+     '}\n'
+     '\n'
+     '/* CA is pulling data from us */\n'
+     'static OSStatus ca_render_cb('),
+    ('    if(stream->playing){\n'
+     '        lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;\n'
+     '        to_copy_frames = min(nframes, stream->held_frames);\n',
+     '    if(stream->playing){\n'
+     '        /* Tessera: counted for TESSERA_AUDIO_LOG; a chunk the game could only partly fill is a click */\n'
+     '        stream->pulls++;\n'
+     '        if(nframes > stream->max_pull_frames) stream->max_pull_frames = nframes;\n'
+     '        if(!stream->held_frames) stream->empty_pulls++;\n'
+     '        else if(nframes > stream->held_frames){\n'
+     '            stream->short_pulls++;\n'
+     '            stream->short_frames += nframes - stream->held_frames;\n'
+     '        }\n'
+     '\n'
+     '        lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;\n'
+     '        to_copy_frames = min(nframes, stream->held_frames);\n'),
+    ('    sc = AudioUnitInitialize(stream->unit);\n',
+     '    if(stream->flow == eRender) tessera_set_io_frames(stream);   /* Tessera: short chunks, no crackle */\n'
+     '\n'
+     '    sc = AudioUnitInitialize(stream->unit);\n'),
+    ('        stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);\n'
+     '    }\n'
+     '    params->result = S_OK;\n',
+     '        stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);\n'
+     '    }\n'
+     '    params->result = S_OK;\n'
+     '    tessera_log_stream(stream, "start");\n'),
+    ('    if(params->timer_thread){\n'
+     '        stream->please_quit = TRUE;\n'
+     '        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);\n'
+     '        NtClose(params->timer_thread);\n'
+     '    }\n'
+     '\n'
+     '    if(stream->unit){\n'
+     '        AudioOutputUnitStop(stream->unit);\n',
+     '    if(params->timer_thread){\n'
+     '        stream->please_quit = TRUE;\n'
+     '        NtWaitForSingleObject(params->timer_thread, FALSE, NULL);\n'
+     '        NtClose(params->timer_thread);\n'
+     '    }\n'
+     '    tessera_log_stream(stream, "end");\n'
+     '\n'
+     '    if(stream->unit){\n'
+     '        AudioOutputUnitStop(stream->unit);\n'),
+    ('        stream->held_frames += params->written_frames;\n'
+     '        stream->written_frames += params->written_frames;\n'
+     '        stream->getbuf_last = 0;\n'
+     '\n'
+     '        params->result = S_OK;\n'
+     '    }\n'
+     '\n'
+     '    os_unfair_lock_unlock(&stream->lock);\n'
+     '\n'
+     '    return STATUS_SUCCESS;\n'
+     '}\n',
+     '        stream->held_frames += params->written_frames;\n'
+     '        stream->written_frames += params->written_frames;\n'
+     '        stream->getbuf_last = 0;\n'
+     '        stream->writes++;\n'
+     '\n'
+     '        params->result = S_OK;\n'
+     '    }\n'
+     '\n'
+     '    os_unfair_lock_unlock(&stream->lock);\n'
+     '\n'
+     '    if(tessera_audio_log()){\n'
+     '        double now = tessera_audio_now();\n'
+     '        if(now - stream->last_log >= 5.0){\n'
+     '            stream->last_log = now;\n'
+     '            tessera_log_stream(stream, "run");\n'
+     '        }\n'
+     '    }\n'
+     '\n'
+     '    return STATUS_SUCCESS;\n'
+     '}\n')])
+
+
+# 4ak. Mouse look also for games that only keep putting the cursor back. 4o/4p treat "cursor hidden and captured
+#      (ClipCursor)" as mouse look. Many games never capture the cursor: they hide it and call SetCursorPos(middle)
+#      after every mouse event or frame (The Last of Us Part I: 160 put-backs for 160 events). For those, Wine threw
+#      away every mouse event that reached it before the put-back was done, and the put-back wiped that movement from
+#      the cursor too: measured with perf/tools/mousetest, a game handling its messages at 90 fps got 64 % of the
+#      movement of a 125 Hz mouse and 60 % of a 1000 Hz mouse (the view turns less than the hand moved, and unevenly).
+#      Now a hidden cursor that is put back on the same spot three times counts as mouse look as long as the
+#      put-backs keep coming (0.5 s): movement is delivered as movement, nothing is dropped, and the game does not wait
+#      for the put-back. With a visible cursor, or once the put-backs stop (menus), positions are used as before.
+exact("dlls/winemac.drv/cocoa_app.h", [
+    ('@property (readonly) BOOL cursorHiddenByClient;   /* Tessera: the Windows program asked to hide the cursor */',
+     '@property (readonly) BOOL cursorHiddenByClient;   /* Tessera: the Windows program asked to hide the cursor */\n'
+     '@property (readonly) BOOL mouseLook;              /* Tessera: hidden cursor that is captured or kept on one spot */')])
+exact("dlls/winemac.drv/cocoa_app.m", [
+    ('    - (BOOL) cursorHiddenByClient\n    {\n        return clientWantsCursorHidden;\n    }\n',
+     '    - (BOOL) cursorHiddenByClient\n    {\n        return clientWantsCursorHidden;\n    }\n'
+     '\n'
+     '    /* Tessera: the Windows program steers with the mouse. It hides the cursor and either captures it (ClipCursor)\n'
+     '       or keeps putting it back on one spot: three put-backs on the same spot, and the last one no longer than\n'
+     '       half a second ago (they come with every mouse event while the mouse moves; one event after a rest is\n'
+     '       handled the old way and its put-back switches mouse look on again). */\n'
+     '    - (BOOL) mouseLook\n'
+     '    {\n'
+     '        if (!clientWantsCursorHidden) return FALSE;\n'
+     '        if (self.clippingCursor) return TRUE;\n'
+     '        return tessera_put_backs_recent();\n'
+     '    }\n'),
+    ('            // Discard all pending mouse move events (Tessera: in mouse look only positions; movement is kept).\n'
+     '            BOOL mouseLook = self.clippingCursor && clientWantsCursorHidden;\n',
+     '            // Discard all pending mouse move events (Tessera: in mouse look only positions; movement is kept).\n'
+     '            BOOL mouseLook = self.mouseLook;\n'),
+    ('            BOOL mouseLook = self.clippingCursor && clientWantsCursorHidden;\n'
+     '            static BOOL mouseLookEventsUncoalesced;\n',
+     '            BOOL mouseLook = self.mouseLook;\n'
+     '            static BOOL mouseLookEventsUncoalesced;\n'),
+    ('    if (controller.clippingCursor && controller.cursorHiddenByClient)\n    {\n        OnMainThreadAsync(^{',
+     '    tessera_note_put_back(cgpoint_mac_from_win(pos));\n'
+     '    if (controller.mouseLook)\n    {\n        OnMainThreadAsync(^{'),
+    ('#import "cocoa_app.h"\n', '#import <os/lock.h>\n#import "cocoa_app.h"\n'),
+    ('@implementation WineApplicationController\n',
+     '/* Tessera: the last spot the Windows program put the cursor on, when, and how often in a row (see -mouseLook).\n'
+     '   Written by the program\'s thread that calls SetCursorPos, read by the main thread. */\n'
+     'static os_unfair_lock tesseraPutBackLock = OS_UNFAIR_LOCK_INIT;\n'
+     'static CGPoint tesseraPutBackPoint;\n'
+     'static NSTimeInterval tesseraPutBackTime;\n'
+     'static int tesseraPutBackStreak;\n'
+     '\n'
+     'static void tessera_note_put_back(CGPoint pos)\n'
+     '{\n'
+     '    os_unfair_lock_lock(&tesseraPutBackLock);\n'
+     '    if (fabs(pos.x - tesseraPutBackPoint.x) <= 2 && fabs(pos.y - tesseraPutBackPoint.y) <= 2)\n'
+     '    {\n'
+     '        if (tesseraPutBackStreak < 1000) tesseraPutBackStreak++;\n'
+     '    }\n'
+     '    else\n'
+     '        tesseraPutBackStreak = 1;\n'
+     '    tesseraPutBackPoint = pos;\n'
+     '    tesseraPutBackTime = [[NSProcessInfo processInfo] systemUptime];\n'
+     '    os_unfair_lock_unlock(&tesseraPutBackLock);\n'
+     '}\n'
+     '\n'
+     '/* three put-backs on one spot, the last one no longer than half a second ago */\n'
+     'static BOOL tessera_put_backs_recent(void)\n'
+     '{\n'
+     '    BOOL ret;\n'
+     '    os_unfair_lock_lock(&tesseraPutBackLock);\n'
+     '    ret = tesseraPutBackStreak >= 3 &&\n'
+     '          [[NSProcessInfo processInfo] systemUptime] - tesseraPutBackTime < 0.5;\n'
+     '    os_unfair_lock_unlock(&tesseraPutBackLock);\n'
+     '    return ret;\n'
+     '}\n'
+     '\n'
+     '@implementation WineApplicationController\n')])
+
+# 4al. Windows larger than the Mac's desktop can be drawn into completely. A window's drawing surface is cropped to
+#      the screen ("some applications create huge windows"), but Wine compared the window, measured in the pixels of
+#      the desktop the program sees, with the screen measured in real pixels. That is the same thing until the
+#      desktop is an emulated mode LARGER than the real one - Tessera's default for D3DMetal games (4u: 3456x2234 over
+#      the Mac's 2056x1329). There every window above 2056x1329 could only be drawn into its top-left part: a
+#      maximized 3454x2116 window got 2176x1280, a whole-screen one 2176x1408 (perf/tools/metrics/winclip). Games
+#      drawing through Direct3D were not affected, programs drawing through GDI were: Assetto Corsa's launcher showed
+#      its page in the top-left corner with a white margin. The crop now uses whichever screen measure is larger.
+exact("dlls/win32u/window.c", [
+    ('static BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect )\n'
+     '{\n'
+     '    RECT virtual_rect = get_virtual_screen_rect( 0, MDT_RAW_DPI );\n',
+     'static BOOL get_surface_rect( const RECT *visible_rect, RECT *surface_rect )\n'
+     '{\n'
+     '    RECT virtual_rect = get_virtual_screen_rect( 0, MDT_RAW_DPI );\n'
+     '    /* Tessera: the window is measured in the desktop the program sees; when that desktop is an emulated mode\n'
+     '       larger than the real one, the real screen is the smaller measure and must not crop the window */\n'
+     '    RECT seen_rect = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );\n'
+     '\n'
+     '    virtual_rect.left   = min( virtual_rect.left, seen_rect.left );\n'
+     '    virtual_rect.top    = min( virtual_rect.top, seen_rect.top );\n'
+     '    virtual_rect.right  = max( virtual_rect.right, seen_rect.right );\n'
+     '    virtual_rect.bottom = max( virtual_rect.bottom, seen_rect.bottom );\n')])
+
+
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
     if not re.search(r"CX_|[Cc]ross[Oo]ver|CROSSOVER|CXHTML", text):

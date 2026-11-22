@@ -23,6 +23,16 @@ Requirements: a Mac with Apple silicon (M1 or newer), macOS 14 Sonoma or later, 
 
 **Remove from Steam…** (in Tessera) puts Steam's original files and your earlier choices back.
 
+## Updating
+
+From 1.3.0 on, Tessera updates itself. When it opens it asks GitHub whether a newer release is out (once in six
+hours at most; the switch is on the same page) and shows it with **Update Now**. It downloads the release's disk image,
+checks it against the release's signed update file (size, SHA-256 and a signature only this project's release key can
+make), puts the new version in place and opens again. Games, saves and settings stay as they are, Steam does not have
+to close, and macOS asks for nothing. **Check for Updates** on Tessera's first page looks at once.
+
+Coming from 1.2.x: download the disk image once more and replace Tessera in Applications; from then on it is one click.
+
 ## Licences
 
 Tessera bundles D3DMetal (Apple's Game Porting Toolkit redistributables, included unmodified and distributed free

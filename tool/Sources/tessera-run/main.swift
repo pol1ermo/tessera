@@ -269,6 +269,12 @@ func wineEnvironment(prefix: URL, exe: String) -> [String: String] {
         // D3DMetal version in use (one process never holds both).
         env["TESSERA_APPLEGPTK_LIBD3DSHARED_PATH"] = "\(root)/lib64/\(d3dMetal3 ? "apple_gptk3" : "apple_gptk")/external/libd3dshared.dylib"
         env["TESSERA_D3DMETAL"] = d3dMetal3 ? "3" : "4"
+        // D3DMetal 4 draws DirectX 12 through its new Metal 4 backend on macOS 27 and through its Metal 3 backend on
+        // macOS 26. Measured in The Last of Us Part I (21 Nov 2026, M3 Max, 95 fps): with the Metal 3 backend a frame
+        // is on screen 6 ms after the game hands it over instead of 8 ms, and a mouse turn shows after 41 ms instead
+        // of 48 ms, at the same frame rate. So Metal 3 is Tessera's choice on every macOS; a game's "Metal 4 graphics
+        // path" setting (D3DM_MTL4=1) gives Apple's default back.
+        if !d3dMetal3 { env["D3DM_MTL4"] = env["D3DM_MTL4"] ?? "0" }
     }
     // DLSS through MetalFX (the game's "DLSS through MetalFX" setting, D3DM_ENABLE_METALFX=1, with D3DMetal): D3DMetal 4
     // answers a game's NVIDIA DLSS calls with Apple's MetalFX upscaler. The game has to see an NVIDIA card

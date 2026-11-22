@@ -58,6 +58,7 @@ struct SteamView: View {
     @EnvironmentObject var model: AppModel
     @State private var forAllGames = true
     @State private var confirmRemove = false
+    @AppStorage(AppModel.checksAtStartKey) private var checksForUpdatesAtStart = true
 
     var body: some View {
         ScrollView {
@@ -67,6 +68,7 @@ struct SteamView: View {
                     .foregroundStyle(.secondary)
 
                 statusCard
+                updateCard
                 runtimesCard
 
                 if let busy = model.busy {
@@ -131,6 +133,53 @@ struct SteamView: View {
                 Button("Repair") { model.install(forAllGames: false) }
                     .buttonStyle(.borderedProminent).disabled(model.busy != nil)
             }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+    }
+
+    /// Tessera's own version: the installed one, a newer one to install with one click, the download's progress.
+    @ViewBuilder private var updateCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch model.update {
+            case .idle(let answer):
+                HStack {
+                    Label("Tessera \(Updater.currentVersion)", systemImage: "shippingbox").font(.headline)
+                    Spacer()
+                    Button("Check for Updates") { model.checkForUpdate(manual: true) }
+                }
+                if let answer { Text(answer).font(.callout).foregroundStyle(.secondary) }
+            case .checking:
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Looking for a newer Tessera…").font(.headline) }
+            case .available(let newer):
+                Label("Tessera \(newer.version) is available (you have \(Updater.currentVersion))", systemImage: "arrow.down.circle.fill")
+                    .font(.headline)
+                if !newer.notes.isEmpty {
+                    ScrollView { Text(newer.notes).font(.callout).frame(maxWidth: .infinity, alignment: .leading) }
+                        .frame(maxHeight: 130)
+                }
+                Text("Tessera downloads it from GitHub (\(Self.megabytes(newer.size)) MB), checks it and opens again. Games, saves and settings stay as they are; Steam does not have to close.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Button("Update Now") { model.installUpdate(newer) }.buttonStyle(.borderedProminent)
+            case .downloading(let newer, let received):
+                Label("Downloading Tessera \(newer.version)…", systemImage: "arrow.down.circle").font(.headline)
+                ProgressView(value: Double(received), total: Double(max(newer.size, 1)))
+                Text("\(Self.megabytes(received)) of \(Self.megabytes(newer.size)) MB from GitHub")
+                    .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+            case .installing(let newer):
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Installing Tessera \(newer.version)… it opens again in a moment").font(.headline) }
+            case .failed(let why):
+                Label("Tessera could not update itself", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline).foregroundStyle(.orange)
+                Text("Reason: \(why). Nothing was changed.").foregroundStyle(.secondary)
+                HStack {
+                    Button("Try Again") { model.checkForUpdate(manual: true) }.buttonStyle(.borderedProminent)
+                    Button("Open the Download Page") { NSWorkspace.shared.open(Updater.releasesPage) }
+                }
+            }
+            Toggle("Look for a newer version when Tessera opens", isOn: $checksForUpdatesAtStart)
+                .font(.callout)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -233,6 +282,11 @@ struct GameView: View {
                     .disabled(settings.graphics == .dxmt || settings.graphics == .dxvk || settings.graphics == .wined3d
                               || settings.graphics == .d3dmetal3)
                 Text("For games with NVIDIA DLSS: the game sees an NVIDIA graphics card, and the DLSS upscaling chosen in its graphics settings runs on Apple's MetalFX.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Metal 4 graphics path (DirectX 12, macOS 27)", isOn: $settings.metal4)
+                    .disabled(settings.graphics == .dxmt || settings.graphics == .dxvk || settings.graphics == .wined3d
+                              || settings.graphics == .d3dmetal3 || !GameSettings.d3dMetal4Runs)
+                Text("Off by default: with the Metal 3 path a frame reaches the screen a few milliseconds sooner at the same frame rate (measured), so mouse and controller feel more direct. Turn it on only if a game misbehaves without it.")
                     .font(.callout).foregroundStyle(.secondary)
                 Toggle("Resolutions up to \(Self.screenSizes.full)", isOn: $settings.fullResolution)
                 Text("On (the default), a game that may draw through D3DMetal's DirectX 10–12 starts on the screen's full \(Self.screenSizes.full), because D3DMetal offers sizes only up to the desktop: its menu then lists every size, sharper at the bigger sizes, more work for the GPU, and small windows such as launchers look smaller. 32-bit games, games drawing through Direct3D 9, OpenGL or Vulkan, games on DXMT, DXVK or WineD3D and Chromium-based games (RPG Maker MV/MZ) list every size on the Mac desktop size (\(Self.screenSizes.desktop)) and keep it. Off, every game uses the Mac desktop size.")

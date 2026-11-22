@@ -222,6 +222,10 @@ struct GameSettings: Equatable {
     var graphics: Graphics = .automatic
     var showHUD = false
     var metalFX = false
+    var metal4 = false          // D3DM_MTL4=1: D3DMetal's Metal 4 backend for DirectX 12 (the launcher's default is Metal 3)
+    /// D3DMetal 4 loads on macOS 26.4 and later; before that the launcher uses D3DMetal 3.0, which has one path only
+    static let d3dMetal4Runs = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0))
     var raytracing = false
     var dotNet = false          // Microsoft .NET Framework 4.8 in this game's Windows folder (DotNetFramework.swift)
     var steamOverlay = true
@@ -229,7 +233,7 @@ struct GameSettings: Equatable {
     var extra: [(String, String)] = []
 
     static func == (a: GameSettings, b: GameSettings) -> Bool {
-        a.graphics == b.graphics && a.showHUD == b.showHUD && a.metalFX == b.metalFX && a.raytracing == b.raytracing
+        a.graphics == b.graphics && a.showHUD == b.showHUD && a.metalFX == b.metalFX && a.metal4 == b.metal4 && a.raytracing == b.raytracing
             && a.dotNet == b.dotNet
             && a.steamOverlay == b.steamOverlay && a.fullResolution == b.fullResolution
             && a.extra.map { "\($0.0)=\($0.1)" } == b.extra.map { "\($0.0)=\($0.1)" }
@@ -247,6 +251,8 @@ struct GameSettings: Equatable {
             case "MTL_HUD_ENABLED": s.showHUD = v == "1"
             case "D3DM_ENABLE_METALFX": s.metalFX = v == "1"
             case "D3DM_SUPPORT_DXR": s.raytracing = v == "1"
+            case "D3DM_MTL4" where v == "1": s.metal4 = true
+            case "D3DM_MTL4" where v == "0": break        // the launcher's default, not worth a line
             case "TESSERA_DOTNET" where v == "1": s.dotNet = true
             case "TESSERA_STEAM_OVERLAY": s.steamOverlay = v != "0"
             case "TESSERA_FULL_RESOLUTION": s.fullResolution = v != "0"
@@ -262,6 +268,7 @@ struct GameSettings: Equatable {
         if showHUD { lines.append("MTL_HUD_ENABLED=1") }
         if metalFX { lines.append("D3DM_ENABLE_METALFX=1") }
         if raytracing { lines.append("D3DM_SUPPORT_DXR=1") }
+        if metal4 { lines.append("D3DM_MTL4=1") }
         if dotNet { lines.append("TESSERA_DOTNET=1") }
         if !steamOverlay { lines.append("TESSERA_STEAM_OVERLAY=0") }
         if !fullResolution { lines.append("TESSERA_FULL_RESOLUTION=0") }

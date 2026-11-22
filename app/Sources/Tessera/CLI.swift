@@ -8,10 +8,11 @@ import Foundation
 ///     Tessera.app/Contents/MacOS/Tessera --restore-steam                    (Valve's own files back into Steam.app)
 ///     Tessera.app/Contents/MacOS/Tessera --play-windows-version APPID
 ///     Tessera.app/Contents/MacOS/Tessera --runtimes | --download-runtimes   (Microsoft's runtimes)
+///     Tessera.app/Contents/MacOS/Tessera --check-update | --update [--reopen]  (a newer Tessera; Updater.swift)
 ///
 /// TESSERA_STEAM_APP=/path/to/Steam.app points every step at another copy of Steam.app.
 enum CLI {
-    static let commands = ["--status", "--install", "--uninstall", "--restore-steam", "--play-windows-version", "--runtimes", "--download-runtimes", "--help"]
+    static let commands = ["--status", "--install", "--uninstall", "--restore-steam", "--play-windows-version", "--runtimes", "--download-runtimes", "--check-update", "--update", "--help"]
 
     /// Runs a command and exits when the app was started with one; returns otherwise.
     static func runIfRequested() {
@@ -50,6 +51,19 @@ enum CLI {
                     if let failure = downloadValveFiles() { throw SteamSetup.SetupError.failed(failure) }
                 }
                 print("Valve's Steam files for Windows games are downloaded")
+            case "--check-update":
+                print("Tessera \(Updater.currentVersion) (build \(Updater.currentBuild)); update information from \(Updater.feed)")
+                if let newer = try Updater.available() {
+                    print("available: \(newer.version) (build \(newer.build)), \(newer.size / 1_000_000) MB")
+                } else {
+                    print("this is the latest version")
+                }
+            case "--update":
+                guard let newer = try Updater.available() else { print("this is the latest version"); break }
+                print("downloading Tessera \(newer.version) (\(newer.size / 1_000_000) MB)")
+                let dmg = try Updater.download(newer)
+                try Updater.install(newer, dmg: dmg, relaunch: args.contains("--reopen"))
+                print("Tessera \(newer.version) is copied and checked; it goes into place as this program ends")
             case "--uninstall":
                 try SteamSetup.uninstall()
                 print("state: \(describe(SteamSetup.state()))")
@@ -57,7 +71,7 @@ enum CLI {
                 try SteamSetup.restoreOriginals()
                 print("Steam.app has Valve's own files again")
             default:
-                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --restore-steam | --play-windows-version APPID | --runtimes | --download-runtimes")
+                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --restore-steam | --play-windows-version APPID | --runtimes | --download-runtimes | --check-update | --update [--reopen]")
             }
             exit(0)
         } catch {

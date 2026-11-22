@@ -1,20 +1,60 @@
 import Foundation
 
+/// What a command line tool printed, gathered while it runs.
+private final class ToolOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    func add(_ chunk: Data) { lock.lock(); data.append(chunk); lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
+}
+
 /// Runs a command line tool and returns its exit status and combined output.
+///
+/// `output: false` is for a tool that starts programs which outlive it (Steam's own "-shutdown" call can): they
+/// inherit the pipe, and reading it to its end would wait for them. Output is gathered while the tool runs, so a
+/// tool that prints more than a pipe holds finishes too. A tool that is still running at the timeout is stopped
+/// (asked first, then forced) and only then asked for its status: up to 1.2.11.1 the status was read from a tool
+/// that had not ended yet, which closed Tessera with an exception.
+/// `errors: false` leaves what the tool writes to its error stream out of the output (a download's warnings would
+/// otherwise land in the middle of the data).
 @discardableResult
-func run(_ path: String, _ args: [String], timeout: TimeInterval = 120) -> (status: Int32, output: String) {
+func run(_ path: String, _ args: [String], timeout: TimeInterval = 120, output wanted: Bool = true,
+         errors: Bool = true) -> (status: Int32, output: String) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: path)
     p.arguments = args
     let pipe = Pipe()
-    p.standardOutput = pipe
-    p.standardError = pipe
-    do { try p.run() } catch { return (-1, "\(error)") }
+    let collected = ToolOutput()
+    if wanted {
+        p.standardOutput = pipe
+        if errors { p.standardError = pipe } else { p.standardError = FileHandle.nullDevice }
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            // nothing more comes once the tool has closed its end: stop listening (an empty read repeats for ever)
+            if chunk.isEmpty { handle.readabilityHandler = nil } else { collected.add(chunk) }
+        }
+    } else {
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+    }
+    do { try p.run() } catch {
+        pipe.fileHandleForReading.readabilityHandler = nil
+        return (-1, "\(error)")
+    }
     let deadline = Date().addingTimeInterval(timeout)
     while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-    if p.isRunning { p.terminate() }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    return (p.terminationStatus, String(decoding: data, as: UTF8.self))
+    if p.isRunning {
+        p.terminate()
+        let grace = Date().addingTimeInterval(2)
+        while p.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        p.waitUntilExit()
+    }
+    if wanted {
+        Thread.sleep(forTimeInterval: 0.05)     // what it printed last
+        pipe.fileHandleForReading.readabilityHandler = nil
+    }
+    return (p.terminationStatus, collected.text)
 }
 
 /// Installs Tessera into the macOS Steam client and takes it out again.
@@ -78,14 +118,31 @@ enum SteamSetup {
         return dict["LSEnvironment"] as? [String: String] ?? [:]
     }
 
+    /// The Steam client is running: a process whose program is steam_osx, other than the short-lived "-shutdown"
+    /// call of the same program. (Up to 1.2.11.1 any process with the client's path anywhere in its command line
+    /// counted - a Terminal command, a script - and "quit Steam" then waited a minute for a program that was not
+    /// Steam, or called "steam_osx -shutdown" with no Steam running, which starts Steam.)
     static var steamIsRunning: Bool {
-        run("/usr/bin/pgrep", ["-f", "Steam.AppBundle/Steam/Contents/MacOS/steam_osx"]).status == 0
+        func table(_ column: String) -> [Int32: String] {
+            var rows: [Int32: String] = [:]
+            for line in run("/bin/ps", ["-axww", "-o", "pid=,\(column)="]).output.split(whereSeparator: \.isNewline) {
+                let trimmed = line.drop(while: { $0 == " " })
+                guard let space = trimmed.firstIndex(of: " "), let pid = Int32(trimmed[..<space]) else { continue }
+                rows[pid] = trimmed[space...].trimmingCharacters(in: .whitespaces)
+            }
+            return rows
+        }
+        let programs = table("comm"), commands = table("args")
+        return programs.contains { pid, program in
+            (program == "steam_osx" || program.hasSuffix("/steam_osx"))
+                && !(commands[pid] ?? "").hasSuffix(" -shutdown")
+        }
     }
 
     /// Asks the running Steam client to quit and waits for it.
     static func quitSteam() -> Bool {
         guard steamIsRunning else { return true }
-        run(Paths.steamClient.path, ["-shutdown"], timeout: 10)
+        run(Paths.steamClient.path, ["-shutdown"], timeout: 10, output: false)
         for _ in 0..<60 {
             if !steamIsRunning { return true }
             Thread.sleep(forTimeInterval: 1)

@@ -116,6 +116,7 @@ Tessera - play your Windows Steam games on this Mac
 3. Click "Set up in Steam". If macOS asks, allow Tessera under Privacy & Security > App Management.
 4. Steam opens again. Install and play your Windows games like any other game.
 
+Updates: Tessera tells you when a newer version is out and installs it with one click.
 To remove: open Tessera, click "Remove from Steam...", then move Tessera to the Bin.
 TXT
     rm -f "$DIST/Tessera.dmg"

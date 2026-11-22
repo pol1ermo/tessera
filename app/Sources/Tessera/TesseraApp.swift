@@ -31,6 +31,18 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var needsAppManagement = false
     @Published var runtimes: Runtimes = .checking
+    @Published var update: UpdateState = .idle(nil)
+
+    /// Tessera's own update (Updater.swift) as the Steam page shows it
+    enum UpdateState: Equatable {
+        case idle(String?)              // nothing to show, or the answer of the last check
+        case checking
+        case available(UpdateManifest)
+        case downloading(UpdateManifest, received: Int64)
+        case installing(UpdateManifest)
+        case failed(String)
+    }
+    nonisolated static let checksAtStartKey = "checkForUpdatesAtStart", lastCheckKey = "lastUpdateCheck"
 
     /// Microsoft's runtimes (MicrosoftPackages.swift) and Valve's Steam files (ValveFiles.swift) as the Steam page shows them
     enum Runtimes: Equatable {
@@ -42,9 +54,59 @@ final class AppModel: ObservableObject {
 
     init() {
         refresh()
-        Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate() }
+        Task.detached(priority: .utility) { SteamSetup.syncAfterUpdate(); Updater.cleanUp() }
         // as soon as Tessera opens: what is missing comes from Microsoft and Valve now, not at a game's first start
         downloadRuntimes()
+        // a newer Tessera: asked at most every six hours, and not at all when the person switched the check off
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.checksAtStartKey) as? Bool ?? true,
+           Date().timeIntervalSince1970 - defaults.double(forKey: Self.lastCheckKey) > 6 * 3600 {
+            checkForUpdate(manual: false)
+        }
+    }
+
+    /// Asks GitHub's latest release whether it is newer. A check Tessera makes by itself stays quiet when it fails
+    /// (no internet); one the person asked for says why.
+    func checkForUpdate(manual: Bool) {
+        switch update {
+        case .checking, .downloading, .installing: return
+        default: break
+        }
+        update = .checking
+        Task.detached(priority: .utility) {
+            let result: UpdateState
+            do {
+                if let newer = try Updater.available() {
+                    result = .available(newer)
+                } else {
+                    result = .idle("This is the latest version.")
+                }
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
+            } catch {
+                result = manual ? .failed(error.localizedDescription) : .idle(nil)
+            }
+            await MainActor.run { self.update = result }
+        }
+    }
+
+    /// Downloads and checks the new version, copies it next to this one, and quits so the swap can happen; the new
+    /// version opens by itself.
+    func installUpdate(_ manifest: UpdateManifest) {
+        update = .downloading(manifest, received: 0)
+        Task.detached(priority: .userInitiated) {
+            do {
+                let dmg = try Updater.download(manifest) { received in
+                    Task { @MainActor in
+                        if case .downloading = self.update { self.update = .downloading(manifest, received: received) }
+                    }
+                }
+                await MainActor.run { self.update = .installing(manifest) }
+                try Updater.install(manifest, dmg: dmg, relaunch: true)
+                await MainActor.run { NSApp.terminate(nil) }
+            } catch {
+                await MainActor.run { self.update = .failed(error.localizedDescription) }
+            }
+        }
     }
 
     private var runtimesBusy = false
