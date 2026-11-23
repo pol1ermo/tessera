@@ -1265,6 +1265,444 @@ exact("dlls/user32/dialog.c", [
      '            int pixels = tessera_scale_dialog_font( MulDiv(template.pointSize, GetDeviceCaps(dc , LOGPIXELSY), 72) );\n')])
 
 
+# 4ao. The thread's last error is where a program that reads it straight from the thread block finds it. Windows keeps
+#      a thread's last error in its thread block (TEB) at offset 0x68, and x64 code reaches the block through the
+#      %gs register. GetLastError() reads it through the block's own address, which works. Some runtimes skip the
+#      call and read %gs:0x68 directly: Mono's x64 JIT does so after every P/Invoke that asks for the last error
+#      (Marshal.GetLastWin32Error), and Unity games run on Mono. macOS does not let a 64-bit program point %gs at
+#      its own block: %gs is the macOS thread's own slot array, where Wine may use three slots (0x30, 0x58, 0x60).
+#      Slot 0x68 belongs to the C library (the buffer of gmtime()), so such a read returned 0 or part of a pointer
+#      instead of the error. .NET's File.Delete() of a file that does not exist then threw "Success" instead of
+#      doing nothing, and a game's save writer that deletes its old backup first failed on every first save
+#      (Core Keeper: every "Write failed: Success ... .pugbackup", then "Init failed for Save Manager" and exit).
+#      Now, while Windows code runs, the slot holds the last error: every place that sets it in Windows code
+#      writes the slot too, and Wine's Unix side hands the slot back to the C library whenever it is entered
+#      (system calls, Unix calls) and takes it again, with the current last error, whenever it returns to Windows
+#      code (also for callbacks, and before a thread ends, because the C library frees what the slot points to).
+exact("include/winbase.h", [
+    ('static FORCEINLINE void WINAPI SetLastError( DWORD err )\n'
+     '{\n'
+     '    *(DWORD *)((void **)NtCurrentTeb() + 13) = err;\n'
+     '}\n',
+     'static FORCEINLINE void WINAPI SetLastError( DWORD err )\n'
+     '{\n'
+     '    *(DWORD *)((void **)NtCurrentTeb() + 13) = err;\n'
+     '#if defined(__x86_64__) && defined(__WINE_PE_BUILD)\n'
+     '    /* Tessera: also where code that reads %gs:0x68 itself looks (Mono\'s JIT); see ntdll/unix/signal_x86_64.c */\n'
+     '    __asm__ __volatile__( "movl %0,%%gs:0x68" : : "r" (err) );\n'
+     '#endif\n'
+     '}\n')])
+exact("dlls/ntdll/error.c", [
+    ('void WINAPI RtlSetLastWin32Error( DWORD err )\n'
+     '{\n'
+     '    NtCurrentTeb()->LastErrorValue = err;\n'
+     '}\n',
+     '/* Tessera: the last error is also kept in the thread slot %gs:0x68, where code that reads the thread block\n'
+     '   through %gs itself (Mono\'s JIT) looks for it; see ntdll/unix/signal_x86_64.c */\n'
+     '#if defined(__x86_64__) && defined(__WINE_PE_BUILD)\n'
+     'static inline void tessera_mirror_last_error( DWORD err ) { __asm__ __volatile__( "movl %0,%%gs:0x68" : : "r" (err) ); }\n'
+     '#else\n'
+     'static inline void tessera_mirror_last_error( DWORD err ) { (void)err; }\n'
+     '#endif\n'
+     '\n'
+     'void WINAPI RtlSetLastWin32Error( DWORD err )\n'
+     '{\n'
+     '    NtCurrentTeb()->LastErrorValue = err;\n'
+     '    tessera_mirror_last_error( err );\n'
+     '}\n'),
+    ('void WINAPI RtlSetLastWin32ErrorAndNtStatusFromNtStatus( NTSTATUS status )\n'
+     '{\n'
+     '    NtCurrentTeb()->LastErrorValue = RtlNtStatusToDosError( status );\n'
+     '}\n',
+     'void WINAPI RtlSetLastWin32ErrorAndNtStatusFromNtStatus( NTSTATUS status )\n'
+     '{\n'
+     '    DWORD err = RtlNtStatusToDosError( status );\n'
+     '    NtCurrentTeb()->LastErrorValue = err;\n'
+     '    tessera_mirror_last_error( err );\n'
+     '}\n')])
+exact("dlls/ntdll/unix/signal_x86_64.c", [
+    # the place where the macOS thread's own value of the slot waits while Windows code runs
+    ('    DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */\n'
+     '};\n',
+     '    DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */\n'
+     '    void                 *tsd_last_error; /* 0340 Tessera: the macOS thread\'s own value of slot %gs:0x68 while\n'
+     '                                           Windows code runs (the slot then holds the last error) */\n'
+     '};\n'),
+    ('C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x33c );\n',
+     'C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, mxcsr ) == 0x33c );\n'
+     'C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct amd64_thread_data, tsd_last_error ) == 0x340 );\n'),
+    # before a thread ends: the C library frees what the slot points to
+    ('#ifdef __APPLE__\n'
+     '/**********************************************************************\n'
+     ' *\t\tmac_thread_gsbase\n',
+     '#ifdef __APPLE__\n'
+     '/**********************************************************************\n'
+     ' *\t\ttessera_restore_tsd_slot\n'
+     ' *\n'
+     ' * Tessera: gives slot %gs:0x68 back to the C library (it keeps the buffer of gmtime() there and frees it when\n'
+     ' * the thread ends). While Windows code runs the slot holds the thread\'s last error; a thread can be ended\n'
+     ' * from a signal handler in that state.\n'
+     ' */\n'
+     'void tessera_restore_tsd_slot(void)\n'
+     '{\n'
+     '    void *own = amd64_thread_data()->tsd_last_error;\n'
+     '    __asm__ volatile ("movq %0,%%gs:0x68" :: "r" (own));\n'
+     '}\n'
+     '\n'
+     '/**********************************************************************\n'
+     ' *\t\tmac_thread_gsbase\n'),
+    # Unix -> Windows code through a callback
+    ('                   "jz 1f\\n\\t"\n'
+     '                   "xchgq %rcx,%r10\\n"\n'
+     '                   "1:\\n\\t"\n'
+     '                   "xor %rbx,%rbx\\n\\t"\n',
+     '                   "jz 1f\\n\\t"\n'
+     '                   "xchgq %rcx,%r10\\n"\n'
+     '                   "1:\\n\\t"\n'
+     '#ifdef __APPLE__\n'
+     '                   /* Tessera: Windows code runs next, slot %gs:0x68 holds the last error for it */\n'
+     '                   "movq %gs:0x68,%rax\\n\\t"\n'
+     '                   "movq %rax,0x340(%r13)\\n\\t"   /* amd64_thread_data()->tsd_last_error */\n'
+     '                   "movl 0x68(%r13),%eax\\n\\t"    /* teb->LastErrorValue */\n'
+     '                   "movq %rax,%gs:0x68\\n\\t"\n'
+     '#endif\n'
+     '                   "xor %rbx,%rbx\\n\\t"\n'),
+    # Windows code -> Unix: system call
+    ('                   "movq %gs:0x30,%r13\\n\\t"        /* teb */\n'
+     '                   "movl %eax,0xb0(%rcx)\\n\\t"      /* frame->syscall_id */\n',
+     '                   "movq %gs:0x30,%r13\\n\\t"        /* teb */\n'
+     '#ifdef __APPLE__\n'
+     '                   /* Tessera: Unix code runs next, slot %gs:0x68 is the C library\'s again (%rdx is saved) */\n'
+     '                   "movq 0x340(%r13),%rdx\\n\\t"     /* amd64_thread_data()->tsd_last_error */\n'
+     '                   "movq %rdx,%gs:0x68\\n\\t"\n'
+     '#endif\n'
+     '                   "movl %eax,0xb0(%rcx)\\n\\t"      /* frame->syscall_id */\n'),
+    # Unix -> Windows code: every return of the system call dispatcher (also thread start, exceptions, callbacks' way back)
+    ('                   __ASM_CFI_CFA_IS_AT2(rcx, 0xa8, 0x01) /* frame->syscall_cfa */\n'
+     '                   "leaq 0x70(%rcx),%rsp\\n\\t"      /* %rsp > frame means no longer inside syscall */\n'
+     '#ifdef __linux__\n'
+     '                   "movw 0x338(%r13),%dx\\n"        /* amd64_thread_data()->fs */\n',
+     '                   __ASM_CFI_CFA_IS_AT2(rcx, 0xa8, 0x01) /* frame->syscall_cfa */\n'
+     '                   "leaq 0x70(%rcx),%rsp\\n\\t"      /* %rsp > frame means no longer inside syscall */\n'
+     '#ifdef __APPLE__\n'
+     '                   /* Tessera: Windows code runs next, slot %gs:0x68 holds the last error for it */\n'
+     '                   "movq %gs:0x68,%rdx\\n\\t"\n'
+     '                   "movq %rdx,0x340(%r13)\\n\\t"     /* amd64_thread_data()->tsd_last_error */\n'
+     '                   "movl 0x68(%r13),%edx\\n\\t"      /* teb->LastErrorValue */\n'
+     '                   "movq %rdx,%gs:0x68\\n\\t"\n'
+     '#endif\n'
+     '#ifdef __linux__\n'
+     '                   "movw 0x338(%r13),%dx\\n"        /* amd64_thread_data()->fs */\n'),
+    # Windows code -> Unix: Unix call
+    ('                   "movq %gs:0x30,%r13\\n\\t"\n'
+     '                   "stmxcsr 0xd8(%rcx)\\n\\t"        /* frame->xsave.MxCsr */\n',
+     '                   "movq %gs:0x30,%r13\\n\\t"\n'
+     '#ifdef __APPLE__\n'
+     '                   /* Tessera: Unix code runs next, slot %gs:0x68 is the C library\'s again */\n'
+     '                   "movq 0x340(%r13),%r11\\n\\t"     /* amd64_thread_data()->tsd_last_error */\n'
+     '                   "movq %r11,%gs:0x68\\n\\t"\n'
+     '#endif\n'
+     '                   "stmxcsr 0xd8(%rcx)\\n\\t"        /* frame->xsave.MxCsr */\n'),
+    # Unix -> Windows code: the short return of a Unix call
+    ('                   /* switch to user stack */\n'
+     '                   "movq 0x88(%rcx),%rsp\\n\\t"\n'
+     '                   __ASM_CFI(".cfi_restore_state\\n\\t")\n'
+     '#ifdef __linux__\n',
+     '                   /* switch to user stack */\n'
+     '                   "movq 0x88(%rcx),%rsp\\n\\t"\n'
+     '                   __ASM_CFI(".cfi_restore_state\\n\\t")\n'
+     '#ifdef __APPLE__\n'
+     '                   /* Tessera: Windows code runs next, slot %gs:0x68 holds the last error for it */\n'
+     '                   "movq %gs:0x68,%rdx\\n\\t"\n'
+     '                   "movq %rdx,0x340(%r13)\\n\\t"     /* amd64_thread_data()->tsd_last_error */\n'
+     '                   "movl 0x68(%r13),%edx\\n\\t"      /* teb->LastErrorValue */\n'
+     '                   "movq %rdx,%gs:0x68\\n\\t"\n'
+     '#endif\n'
+     '#ifdef __linux__\n')])
+exact("dlls/ntdll/unix/thread.c", [
+    ('static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )\n'
+     '{\n',
+     '#if defined(__APPLE__) && defined(__x86_64__)\n'
+     'extern void tessera_restore_tsd_slot(void);\n'
+     '#endif\n'
+     '\n'
+     'static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )\n'
+     '{\n'
+     '#if defined(__APPLE__) && defined(__x86_64__)\n'
+     '    tessera_restore_tsd_slot();  /* Tessera: the C library frees what slot %gs:0x68 points to */\n'
+     '#endif\n')])
+
+
+# 4ap. msync (the Mac's fast path for Windows waits): a wait on two or more things is no longer left registered in
+#      the server, and the server no longer writes one log line for every wait once its node pool is used up.
+#      A thread that waits on more than one object (WaitForMultipleObjects, or any alertable wait: the object plus
+#      the thread's own APC event; Mono and Unity's job threads wait this way) registers the wait with wineserver's
+#      msync thread and takes it back when the wait is over. One way out did not take it back: when the object
+#      became signaled while the registration was still on its way. The server was expected to see the signaled
+#      object and add nothing, but by the time it reads the message the object has usually been taken again, so it
+#      added the wait and nothing ever removed it. On a busy semaphore that is thousands of left-over entries a
+#      second: the server's pool of 524,288 entries ran out after seconds to minutes, and from then on every wait
+#      printed "msync: warn: node memory pool exhausted" (The Forest: more than 100,000 lines a second, a 7.4 GB game log
+#      from 22 minutes of play) while the server's memory grew without end.
+#      - ntdll: that way out sends the same "remove" message as the others (it also gave back the count of waiters
+#        on the objects but not on the APC event; the message's helper does both).
+#      - server: when the second object of a wait is found signaled, the first one's entry is removed too (the
+#        check was "more than one before it" instead of "any before it"); entries a thread left behind because it
+#        was ended in the middle of a wait go when the object goes; and the warning is written at the 1st, 2nd,
+#        4th, 8th... time only.
+exact("dlls/ntdll/unix/msync.c", [
+    ('        if (check_shm_contention( objs_shm, alert_obj_shm, count, tid ))\n'
+     '        {\n'
+     '            int i;\n'
+     '            for (i = 0; i < count; i++)\n'
+     '            {\n'
+     '                struct event *obj = (struct event *)objs_shm[i];\n'
+     '\n'
+     '                int refs = __atomic_sub_fetch( &obj->multiple_waiters, 1, __ATOMIC_SEQ_CST);\n'
+     '                if (refs < 0)\n'
+     '                    __atomic_store_n( &obj->multiple_waiters, 0, __ATOMIC_SEQ_CST);\n'
+     '            }\n'
+     '            return STATUS_PENDING;\n'
+     '        }\n',
+     '        if (check_shm_contention( objs_shm, alert_obj_shm, count, tid ))\n'
+     '        {\n'
+     '            /* Tessera: take the registration back like every other way out. The server reads the message\n'
+     '             * later; if the object has been taken again by then it adds this wait, and nothing else would\n'
+     '             * ever remove it (messages of one thread arrive in order, so this one is read after it). */\n'
+     '            server_remove_wait( msgh_id, objs, objs_shm, alert_obj, alert_obj_shm, count );\n'
+     '            return STATUS_PENDING;\n'
+     '        }\n')])
+exact("server/msync.c", [
+    ('    if (pool->count == 0)\n'
+     '    {\n'
+     '        fprintf( stderr, "msync: warn: node memory pool exhausted\\n" );\n'
+     '        return malloc( sizeof(struct tid_node) );\n'
+     '    }\n',
+     '    if (pool->count == 0)\n'
+     '    {\n'
+     '        /* Tessera: at the 1st, 2nd, 4th, 8th... time only; this ran for every wait once the pool was empty */\n'
+     '        static unsigned int misses;\n'
+     '        misses++;\n'
+     '        if (!(misses & (misses - 1)))\n'
+     '            fprintf( stderr, "msync: warn: node memory pool exhausted (%u times)\\n", misses );\n'
+     '        return malloc( sizeof(struct tid_node) );\n'
+     '    }\n'),
+    ('                if (i > 1) unregister_wait( &receive_message, tid, i );\n',
+     '                if (i > 0) unregister_wait( &receive_message, tid, i );  /* Tessera: was i > 1, the first object\'s entry stayed */\n'),
+    ('    refcount = __atomic_sub_fetch( &obj->refcount, 1, __ATOMIC_SEQ_CST );\n'
+     '\n'
+     '    if (!refcount) last_destroyed_idx = shm_idx;\n',
+     '    refcount = __atomic_sub_fetch( &obj->refcount, 1, __ATOMIC_SEQ_CST );\n'
+     '\n'
+     '    if (!refcount)\n'
+     '    {\n'
+     '        /* Tessera: entries of threads that were ended in the middle of a wait go with the object; nothing\n'
+     '         * else removes them, and the next object at this index would inherit them */\n'
+     '        if (shm_idx < tid_map_size)\n'
+     '        {\n'
+     '            struct tid_node *node = tid_map[shm_idx].head, *next;\n'
+     '\n'
+     '            tid_map[shm_idx].head = NULL;\n'
+     '            for (; node; node = next)\n'
+     '            {\n'
+     '                next = node->next;\n'
+     '                pool_free( node );\n'
+     '            }\n'
+     '        }\n'
+     '        last_destroyed_idx = shm_idx;\n'
+     '    }\n')])
+
+
+# 4aq. The processor speed in the registry is the processor's, not the time-stamp counter's. wineboot writes
+#      HARDWARE\DESCRIPTION\System\CentralProcessor\N\~MHz from the frequency of the time-stamp counter. On a real
+#      PC that is the processor's nominal speed. Under Rosetta the counter is a virtual 1 GHz clock, so every Windows
+#      program that reads the classic "~MHz" value saw a 1000 MHz machine, while Win32_Processor (WMI, from the
+#      system's own figure) said 2400. Launchers that compare "~MHz" with a game's minimum (Borderlands GOTY
+#      Enhanced: 2.4 GHz) then warn "Your system does not meet the minimum system requirements" at the first
+#      start. Now the higher of the two is written: what the system reports when the counter is slower than that.
+exact("programs/wineboot/wineboot.c", [
+    ('                DWORD tsc_freq_mhz = (DWORD)(tsc_frequency / 1000000ull); /* Hz -> Mhz */\n'
+     '                if (!tsc_freq_mhz) tsc_freq_mhz = power_info[core].MaxMhz;\n',
+     '                DWORD tsc_freq_mhz = (DWORD)(tsc_frequency / 1000000ull); /* Hz -> Mhz */\n'
+     '                if (!tsc_freq_mhz) tsc_freq_mhz = power_info[core].MaxMhz;\n'
+     '                /* Tessera: under Rosetta the time-stamp counter is a virtual 1 GHz clock; "~MHz" is read as the\n'
+     '                 * processor\'s speed (minimum-requirement checks), so the system\'s own figure wins when higher */\n'
+     '                if (power_info[core].MaxMhz > tsc_freq_mhz) tsc_freq_mhz = power_info[core].MaxMhz;\n')])
+
+
+# 4ar. Win32_VideoController.PNPDeviceID is the display adapter's device instance ID, as on Windows. Windows gives
+#      the instance path, three parts: "PCI\VEN_10DE&DEV_2204&SUBSYS_...&REV_A1\4&2283F625&0&0008". Wine's WMI gave
+#      the first hardware ID, which is the same without the last part ("PCI\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00").
+#      Programs that take the string apart expect the Windows form: the launcher of Borderlands GOTY Enhanced throws
+#      "Unable to parse PNPDeviceID in Win32_VideoController" and ends its first start with "Initialization error.
+#      Please ensure the game files have not been corrupted or moved." (It only gets that far when the processor
+#      check before it passes; see 4aq.) Now the instance ID of the device is returned
+#      ("PCI\VEN_106B&DEV_03F1&SUBSYS_00000000&REV_00\00000000"); the hardware ID stays the fallback.
+exact("dlls/wbemprox/builtin.c", [
+    ('        /* DEVPKEY_Device_HardwareIds is actually an array of null-terminated\n'
+     '           strings, so consumers will only see the first one. */\n'
+     '        ret[i].pnpdevice_id = hw_ids;\n',
+     '        /* DEVPKEY_Device_HardwareIds is actually an array of null-terminated\n'
+     '           strings, so consumers will only see the first one. */\n'
+     '        {\n'
+     '            /* Tessera: Windows reports the device instance ID here (hardware ID + "\\\\instance"); programs that\n'
+     '             * parse the string count on its three parts */\n'
+     '            WCHAR instance_id[200];\n'
+     '            WCHAR *copy;\n'
+     '            if (SetupDiGetDeviceInstanceIdW( devs, &dev_info, instance_id, ARRAY_SIZE(instance_id), NULL ) &&\n'
+     '                (copy = wcsdup( instance_id )))\n'
+     '            {\n'
+     '                free( hw_ids );\n'
+     '                hw_ids = copy;\n'
+     '            }\n'
+     '        }\n'
+     '        ret[i].pnpdevice_id = hw_ids;\n')])
+
+
+# 4as. The graphics card's memory in the registry (HardwareInformation.MemorySize, what Win32_VideoController's
+#      AdapterRAM and many launchers read) is capped at Windows' own ceiling instead of wrapping to 0. The 32-bit
+#      value was made with min( memory_size, ULONG_MAX ), but in Wine's Unix libraries ULONG_MAX is the C library's
+#      (64 bits wide on macOS), so nothing was capped and the conversion to 32 bits kept only the low half: 0 for any
+#      size that is a multiple of 4 GB. An Apple-silicon Mac's graphics memory is its unified memory (8, 16, 32,
+#      64 GB...), so the value was 0 on these Macs: Windows programs were told the card has no memory, and launchers
+#      that compare it with a minimum (Borderlands GOTY Enhanced: 1 GB) warned and chose their lowest settings.
+#      Windows itself reports 0xFFF00000 (4 GB less 1 MB) for cards with 4 GB or more; so does this now.
+exact("dlls/win32u/sysparams.c", [
+    ('    value = (ULONG)min( memory_size, (ULONGLONG)ULONG_MAX );\n'
+     '    set_reg_value( hkey, memory_sizeW, REG_DWORD, &value, sizeof(value) );\n',
+     '    /* Tessera: ULONG_MAX is the C library\'s here (64-bit), so this never capped and 64 GB became 0;\n'
+     '     * Windows reports 4 GB less 1 MB for anything larger */\n'
+     '    value = memory_size > 0xfff00000u ? 0xfff00000u : (ULONG)memory_size;\n'
+     '    set_reg_value( hkey, memory_sizeW, REG_DWORD, &value, sizeof(value) );\n')])
+
+
+# 4at. The links in Wine's temporary loader folder follow the runtime when it is moved. On a Mac, Wine starts every
+#      Windows program through a link in $TMPDIR/winetemp-<inode>-<size>-<time> of the loader file (so the process
+#      carries the program's name; Tessera makes it a small app bundle for Game Mode), and puts a link to ntdll.so
+#      beside it, because the loader opens the ntdll.so next to itself. The folder is named after the loader FILE,
+#      and a file keeps its inode, size and time when its folder - the runtime, or the whole app - is moved or
+#      renamed on the same disk. The ntdll.so link was made with symlink(), which does nothing when the link is
+#      already there. So after a move the old folder was found again with a link to the place the runtime used to
+#      be, and every Windows program ended at once with "wine: could not load ntdll.so". It lasted until the
+#      temporary folder was cleared (a restart of the Mac). Whoever started a game and then moved Tessera.app into
+#      Applications, or renamed it, got exactly that. Now a link that is missing or points somewhere else is
+#      replaced (written beside it and renamed over it, so a second program starting at the same moment never sees
+#      a half-made one).
+exact("dlls/ntdll/unix/loader.c", [
+    ('/* Returns a path to $TMPDIR/winetemp-<wineloader_inode>-<wineloader_size_in_bytes>-<wineloader_mtime_sec>-<-wineloader_mtime_nsec>\n',
+     '/* Tessera: a link in the temporary folder has to point at the runtime as it is now. The folder is named after\n'
+     ' * the loader file (inode, size, time), which stays the same when the runtime or the whole app is moved or renamed\n'
+     ' * on the same disk; a link from before the move then led nowhere and no program could load ntdll.so. */\n'
+     'static void fresh_symlink(const char *target, const char *linkpath)\n'
+     '{\n'
+     '    char cur[PATH_MAX];\n'
+     '    char *tmp;\n'
+     '    ssize_t n = readlink(linkpath, cur, sizeof(cur) - 1);\n'
+     '\n'
+     '    if (n >= 0)\n'
+     '    {\n'
+     '        cur[n] = 0;\n'
+     '        if (!strcmp(cur, target)) return;\n'
+     '    }\n'
+     '    else if (errno == ENOENT && !symlink(target, linkpath)) return;\n'
+     '\n'
+     '    /* stale (or lost a race): make the right link beside it and put it in place in one step */\n'
+     '    if (asprintf(&tmp, "%s.%d", linkpath, (int)getpid()) < 0) return;\n'
+     '    unlink(tmp);\n'
+     '    if (symlink(target, tmp) || rename(tmp, linkpath)) unlink(tmp);\n'
+     '    free(tmp);\n'
+     '}\n'
+     '\n'
+     '/* Returns a path to $TMPDIR/winetemp-<wineloader_inode>-<wineloader_size_in_bytes>-<wineloader_mtime_sec>-<-wineloader_mtime_nsec>\n'),
+    ('    asprintf( &str, "%s/ntdll.so", tempdir );\n'
+     '    symlink( ntdll, str );\n',
+     '    asprintf( &str, "%s/ntdll.so", tempdir );\n'
+     '    fresh_symlink( ntdll, str );\n'),
+    ('        symlink(p, path);\n'
+     '        free(p);\n',
+     '        fresh_symlink(p, path);\n'
+     '        free(p);\n')])
+
+
+# 4au. A process that ends gives graphics work that is already queued a moment to reach the kernel. A Metal command
+#      buffer that waits for an event (how D3DMetal carries a Direct3D 12 queue's Wait on a fence, and MoltenVK a
+#      Vulkan semaphore) is held INSIDE the kernel, in Metal's own submission thread, until the command buffer that
+#      signals the event has been submitted too - an uninterruptible wait with a time limit (5 s by default; 30 s
+#      as D3DMetal uses it). In a Direct3D 12 game with several queues that is the normal state: the copy and
+#      compute queues wait nearly all the time for the busy graphics queue, whose signal is queued in D3DMetal but
+#      not yet submitted. When the process ends in that moment (Steam's Stop, the game's own quit), the signal is
+#      never submitted, the kernel does not give up the wait, and the dead process stays for the full 30 seconds:
+#      Steam shows the game as running and ignores a new start. Seen in Unreal Engine 5 games; the same happens to
+#      a plain Mac program (perf/tools/exitlag/mtlwait). The fix: when the last Windows thread is gone, the process
+#      waits, for at most 0.4 s, until none of its threads is in an uninterruptible kernel wait. The native
+#      graphics threads use that time to submit what was queued, which releases the waiting queues, and then the
+#      process leaves at once. A process with no such thread loses 3 ms. (0.4 s because the wine server sends
+#      SIGKILL to a process that is still there about half a second after its end.)
+exact("dlls/ntdll/unix/thread.c", [
+    ('void abort_process( int status )\n'
+     '{\n'
+     '    _exit( get_unix_exit_code( status ));\n'
+     '}\n',
+     '#ifdef __APPLE__\n'
+     '/* Tessera: before the process goes, let graphics work that is already queued reach the kernel. A Metal command\n'
+     ' * buffer waiting for an event sits in an uninterruptible kernel wait (up to 30 s as D3DMetal uses it) until the\n'
+     ' * signalling buffer is submitted; if the process ends first, the kernel keeps the dead process for the rest of\n'
+     ' * that time. The native submission threads are still running here (only the Windows threads are gone), so wait\n'
+     ' * until no thread is in such a wait: at most 0.4 s, 3 ms when there is none. */\n'
+     'static void settle_submissions(void)\n'
+     '{\n'
+     '    mach_port_t self = mach_thread_self();\n'
+     '    int waited = 0, seen = 0, clear = 0;\n'
+     '\n'
+     '    for (;;)\n'
+     '    {\n'
+     '        thread_act_array_t threads;\n'
+     '        mach_msg_type_number_t count, i;\n'
+     '        int blocked = 0;\n'
+     '\n'
+     '        if (task_threads( mach_task_self(), &threads, &count ) != KERN_SUCCESS) break;\n'
+     '        for (i = 0; i < count; i++)\n'
+     '        {\n'
+     '            struct thread_basic_info info;\n'
+     '            mach_msg_type_number_t size = THREAD_BASIC_INFO_COUNT;\n'
+     '\n'
+     '            if (threads[i] != self &&\n'
+     '                thread_info( threads[i], THREAD_BASIC_INFO, (thread_info_t)&info, &size ) == KERN_SUCCESS &&\n'
+     '                info.run_state == TH_STATE_UNINTERRUPTIBLE) blocked++;\n'
+     '            mach_port_deallocate( mach_task_self(), threads[i] );\n'
+     '        }\n'
+     '        vm_deallocate( mach_task_self(), (vm_address_t)threads, count * sizeof(*threads) );\n'
+     '\n'
+     '        if (blocked) { seen = 1; clear = 0; }\n'
+     '        else if (++clear >= (seen ? 3 : 2)) break;\n'
+     '        if (waited >= 400) break;\n'
+     '        usleep( 3000 );\n'
+     '        waited += 3;\n'
+     '    }\n'
+     '    mach_port_deallocate( mach_task_self(), self );\n'
+     '}\n'
+     '#endif\n'
+     '\n'
+     'void abort_process( int status )\n'
+     '{\n'
+     '#ifdef __APPLE__\n'
+     '    settle_submissions();\n'
+     '#endif\n'
+     '    _exit( get_unix_exit_code( status ));\n'
+     '}\n'),
+    ('void exit_process( int status )\n'
+     '{\n'
+     '    pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );\n'
+     '    process_exit_wrapper( get_unix_exit_code( status ));\n',
+     'void exit_process( int status )\n'
+     '{\n'
+     '    pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );\n'
+     '#ifdef __APPLE__\n'
+     '    settle_submissions();\n'
+     '#endif\n'
+     '    process_exit_wrapper( get_unix_exit_code( status ));\n')])
+
+
 def neutralize(path):
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
     if not re.search(r"CX_|[Cc]ross[Oo]ver|CROSSOVER|CXHTML", text):

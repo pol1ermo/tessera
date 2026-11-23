@@ -27,20 +27,42 @@ let steamContentLogStart = ((try? FileManager.default.attributesOfItem(atPath: s
 let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Tessera")
 try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
 let logURL = logDir.appendingPathComponent("game-\(appID).log")
-let logHandle: FileHandle? = {
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-    }
-    let h = try? FileHandle(forWritingTo: logURL)
-    h?.seekToEndOfFile()
-    return h
-}()
+// Opened in append mode: the game's programs inherit this file as their output, and in append mode every write goes
+// to the file's current end, so the log can be cut short while they hold it open (cutLog below).
+let logFD = open(logURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+let logHandle: FileHandle? = logFD >= 0 ? FileHandle(fileDescriptor: logFD, closeOnDealloc: false) : nil
 
 func log(_ message: String) {
     let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate, .withFullTime])
     let line = "[\(stamp)] \(message)\n"
     logHandle?.write(line.data(using: .utf8)!)
 }
+
+// A game's log keeps every session and had no limit. Two limits keep it from filling the disk:
+// - when a session starts, a log over 32 MB is cut down to its last 4 MB;
+// - during a session the size is looked at every 20 s, and a log over 256 MB is cut down the same way. Only a
+//   program that writes the same line without end gets there (The Forest on 1.3.1: a Wine warning more than 100,000 times a
+//   second, a 7.4 GB log after 22 minutes of play); it is then cut about once a minute instead of growing.
+let logStartLimit: UInt64 = 32 << 20
+let logSessionLimit: UInt64 = 256 << 20
+let logKeep = 4 << 20
+
+func cutLog(over limit: UInt64) {
+    var info = stat()
+    guard logFD >= 0, fstat(logFD, &info) == 0, UInt64(info.st_size) > limit else { return }
+    let size = UInt64(info.st_size)
+    var tail = Data()
+    if let reader = FileHandle(forReadingAtPath: logURL.path) {
+        if (try? reader.seek(toOffset: size - UInt64(logKeep))) != nil { tail = reader.readData(ofLength: logKeep) }
+        try? reader.close()
+        // from the first whole line
+        if let newline = tail.firstIndex(of: 0x0A) { tail = tail.subdata(in: tail.index(after: newline)..<tail.endIndex) }
+    }
+    ftruncate(logFD, 0)
+    log("this log had grown to \(size >> 20) MB; everything before its last \(logKeep >> 20) MB was removed")
+    logHandle?.write(tail)
+}
+cutLog(over: logStartLimit)
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
     log("ERROR: \(message)")
@@ -672,6 +694,13 @@ default:
 
 guard let exePath = args.first else { fail("no program to run") }
 let gameArgs = Array(args.dropFirst())
+// the log's size limit during the session (cutLog above)
+Thread.detachNewThread {
+    while true {
+        Thread.sleep(forTimeInterval: 20)
+        cutLog(over: logSessionLimit)
+    }
+}
 ensureRosetta()
 let prefix = prefixURL()
 let env = wineEnvironment(prefix: prefix, exe: exePath)
@@ -1130,4 +1159,5 @@ if verb == "waitforexitandrun" {
     runProcess(runtime.server, ["-w"], env: env)
     log("all processes of the prefix have exited")
 }
+cutLog(over: logStartLimit)   // a session that wrote that much leaves its last 4 MB
 exit(status)

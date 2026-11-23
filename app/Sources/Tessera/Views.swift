@@ -372,7 +372,9 @@ struct MacOnlyGameView: View {
                 }
             }
             SwiftUI.Section("This Mac version can't run") {
-                Text("Steam installed this game's Mac version, a 32-bit program. macOS 10.15 and later run only 64-bit programs, so it can't start. Tessera can play the game's Windows version instead: Steam downloads the Windows files in place of the Mac ones, and the game then appears under Windows games.")
+                Text(game.macProblem == .noMacStartEntry
+                     ? "Steam installed Mac files for this game, but the game's Steam configuration has no entry to start them: every way to start it is for Windows (an unfinished or dropped Mac version left on Steam). Pressing Play in Steam fails. Tessera can play the game's Windows version instead: Steam downloads the Windows files in place of the Mac ones, and the game then appears under Windows games."
+                     : "Steam installed this game's Mac version, a 32-bit program. macOS 10.15 and later run only 64-bit programs, so it can't start. Tessera can play the game's Windows version instead: Steam downloads the Windows files in place of the Mac ones, and the game then appears under Windows games.")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Button("Play the Windows Version…") { confirm = true }
@@ -395,7 +397,7 @@ struct MacOnlyGameView: View {
         .confirmationDialog("Play the Windows version of \(game.name)?", isPresented: $confirm) {
             Button("Switch to the Windows Version") { model.playWindowsVersion(game) }
         } message: {
-            Text("Steam will quit for a moment and open again, then download the Windows version in place of the Mac one.")
+            Text("Steam will quit for a moment and open again. Then press Update (or Play) on the game in Steam: it downloads the Windows version in place of the Mac one.")
         }
     }
 }

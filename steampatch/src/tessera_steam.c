@@ -172,6 +172,88 @@ static int patch_compat_gate(const image_t *im) {
 }
 
 
+// ---- patch 2: the "VR only" flag of a game's library entry (steamui.dylib)
+//
+// Before a game starts, Steam's interface shows "Strap on your VR headset" when the game's library entry says
+// "VR only" and no headset is known. The client sets that flag when the game supports VR and none of its launch
+// entries FOR THE CLIENT'S OWN SYSTEM is a non-VR one. For a Windows game run through a compatibility tool that test
+// is wrong on macOS: an ordinary entry marked for Windows is not counted, the VR entry (no system named) is, so a
+// game with a normal mode and a VR mode counts as VR only. macOS has no SteamVR at all, so the flag has no use here:
+// Tessera makes the client never set it.
+//
+// The code is found by shape, not by address. The entry is a protobuf message (CAppOverview); its "vr_only" field
+// has number 58, whose wire tag 0x3D0 is fixed, so the serializer tells us where the flag lives:
+//   ldr  wE, [xB, #WORD]           the message's "field is set" bits
+//   tbz  wE, #BIT, ...
+//   ldrb wA, [xB, #OFF]            the flag
+//   mov  wC, #0x3d0 ; strh wC, [xD]
+// and the one place that sets it looks like
+//   blr  x8                        "has a launch entry that is not VR?"
+//   tbnz w0, #0, skip              <- replaced by: b skip
+//   ldr  wA, [xB, #WORD] ; orr wA, wA, #(1 << BIT) ; str wA, [xB, #WORD]
+//   mov  wA, #1 ; strb wA, [xB, #OFF]
+// Returns the index of the tbnz instruction, or -1 (not found, or more than one candidate).
+long tessera_find_vr_only_site(const uint32_t *w, size_t n, int *out_off, int *out_bit) {
+    int off = -1, bit = -1, word = -1, sers = 0;
+    for (size_t i = 10; i + 1 < n; i++) {
+        if ((w[i] & 0xFFE00000u) != 0x52800000u || ((w[i] >> 5) & 0xFFFF) != 0x3D0) continue;     // mov wC, #0x3d0
+        if ((w[i + 1] & 0xFFFFFC00u) != 0x79000000u || (w[i + 1] & 31) != (w[i] & 31)) continue;   // strh wC, [xD]
+        if ((w[i - 1] & 0xFFC00000u) != 0x39400000u) continue;                                     // ldrb wA, [xB, #OFF]
+        uint32_t base = (w[i - 1] >> 5) & 31;
+        int b = -1, wd = -1;
+        for (size_t k = 2; k <= 9 && b < 0; k++) {
+            uint32_t t = w[i - k];
+            if ((t & 0xFF000000u) != 0x36000000u) continue;                                        // tbz wE, #BIT (bit < 32)
+            uint32_t reg = t & 31;
+            for (size_t j = k + 1; j <= k + 3 && j <= i; j++) {
+                uint32_t l = w[i - j];
+                if ((l & 0xFFC00000u) == 0xB9400000u && (l & 31) == reg && ((l >> 5) & 31) == base) {   // ldr wE, [xB, #WORD]
+                    b = (int)((t >> 19) & 31);
+                    wd = (int)((l >> 10) & 0xFFF) * 4;
+                    break;
+                }
+            }
+        }
+        if (b < 0) continue;
+        off = (int)((w[i - 1] >> 10) & 0xFFF); bit = b; word = wd; sers++;
+    }
+    if (sers != 1) return -1;
+    long site = -1; int sites = 0;
+    for (size_t i = 6; i < n; i++) {
+        uint32_t a = w[i] & 31, b = (w[i] >> 5) & 31;
+        if ((w[i] & 0xFFC00000u) != 0x39000000u || (int)((w[i] >> 10) & 0xFFF) != off) continue;   // strb wA, [xB, #OFF]
+        if (w[i - 1] != (0x52800020u | a)) continue;                                               // mov wA, #1
+        uint32_t ldr = 0xB9400000u | ((uint32_t)(word / 4) << 10) | (b << 5), str = 0xB9000000u | ((uint32_t)(word / 4) << 10) | (b << 5);
+        if ((w[i - 2] & 0xFFFFFFE0u) != str) continue;                                             // str wR, [xB, #WORD]
+        uint32_t r = w[i - 2] & 31;
+        if (w[i - 3] != (0x32000000u | ((uint32_t)((32 - bit) & 31) << 16) | (r << 5) | r)) continue;   // orr wR, wR, #(1 << BIT)
+        if (w[i - 4] != (ldr | r)) continue;                                                       // ldr wR, [xB, #WORD]
+        if ((w[i - 5] & 0xFFF8001Fu) != 0x37000000u) continue;                                     // tbnz w0, #0, skip
+        if ((w[i - 6] & 0xFFFFFC1Fu) != 0xD63F0000u) continue;                                     // blr xN
+        site = (long)i - 5; sites++;
+    }
+    if (sites != 1) return -1;
+    if (out_off) *out_off = off;
+    if (out_bit) *out_bit = bit;
+    return site;
+}
+
+static int patch_vr_only(const image_t *im) {
+    const uint32_t *w = (const uint32_t *)im->text;
+    int off = 0, bit = 0;
+    long i = tessera_find_vr_only_site(w, im->text_size / 4, &off, &bit);
+    if (i < 0) {
+        tlog("VR-only flag: pattern not found (harmless: Steam may ask for a VR headset before games that also have a VR mode)");
+        return 0;
+    }
+    int32_t imm14 = (int32_t)((w[i] >> 5) & 0x3FFF);
+    if (imm14 & 0x2000) imm14 -= 0x4000;
+    uintptr_t site = im->text + (uintptr_t)i * 4;
+    if (!patch_insn(site, 0x14000000u | ((uint32_t)imm14 & 0x03FFFFFFu))) return 0;                // b skip
+    tlog("VR-only flag: never set (patched %p, flag at +0x%x, bit %d)", (void *)site, off, bit);
+    return 1;
+}
+
 // ---- probes (TESSERA_PROBE=1): fixed offsets for client build 1794536281, for investigating Steam's behaviour only
 static int probe_calls;
 static void *o_scan, *o_enabled, *o_ctor;
@@ -234,6 +316,12 @@ static void on_image(const struct mach_header *mh, intptr_t slide) {
     if (!dladdr(mh, &info) || !info.dli_fname) return;
     const char *name = strrchr(info.dli_fname, '/');
     name = name ? name + 1 : info.dli_fname;
+    if (!strcmp(name, "steamui.dylib")) {
+        image_t ui;
+        if (image_open(&ui, mh, slide)) patch_vr_only(&ui);
+        else tlog("steamui.dylib: unexpected image layout");
+        return;
+    }
     if (strcmp(name, "steamclient.dylib")) return;
     image_t im;
     if (!image_open(&im, mh, slide)) {

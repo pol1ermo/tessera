@@ -7,12 +7,13 @@ import Foundation
 ///     Tessera.app/Contents/MacOS/Tessera --uninstall
 ///     Tessera.app/Contents/MacOS/Tessera --restore-steam                    (Valve's own files back into Steam.app)
 ///     Tessera.app/Contents/MacOS/Tessera --play-windows-version APPID
+///     Tessera.app/Contents/MacOS/Tessera --launch-entries APPID... [--file appinfo.vdf]   (what Steam can start)
 ///     Tessera.app/Contents/MacOS/Tessera --runtimes | --download-runtimes   (Microsoft's runtimes)
 ///     Tessera.app/Contents/MacOS/Tessera --check-update | --update [--reopen]  (a newer Tessera; Updater.swift)
 ///
 /// TESSERA_STEAM_APP=/path/to/Steam.app points every step at another copy of Steam.app.
 enum CLI {
-    static let commands = ["--status", "--install", "--uninstall", "--restore-steam", "--play-windows-version", "--runtimes", "--download-runtimes", "--check-update", "--update", "--help"]
+    static let commands = ["--status", "--install", "--uninstall", "--restore-steam", "--play-windows-version", "--launch-entries", "--runtimes", "--download-runtimes", "--check-update", "--update", "--help"]
 
     /// Runs a command and exits when the app was started with one; returns otherwise.
     static func runIfRequested() {
@@ -25,8 +26,8 @@ enum CLI {
                 print("state: \(describe(SteamSetup.state()))")
                 for game in GameLibrary.windowsGames() { print("  \(game.id)\t\(game.name)") }
                 let stuck = GameLibrary.macVersionsThatCannotRun()
-                if !stuck.isEmpty { print("Mac versions that cannot run (32-bit):") }
-                for game in stuck { print("  \(game.id)\t\(game.name)") }
+                if !stuck.isEmpty { print("Mac versions that cannot run:") }
+                for game in stuck { print("  \(game.id)\t\(game.name)\t(\(game.macProblem?.short ?? "?"))") }
             case "--install":
                 try SteamSetup.install(useForAllWindowsGames: args.contains("--all-games"),
                                        setDefaultTool: !args.contains("--keep-mappings"))
@@ -34,7 +35,23 @@ enum CLI {
             case "--play-windows-version":
                 guard args.count > 1, Int(args[1]) != nil else { throw SteamSetup.SetupError.failed("usage: --play-windows-version APPID") }
                 try SteamSetup.playWindowsVersion(appID: args[1])
-                print("\(args[1]) now plays its Windows version through Tessera; open Steam to download it")
+                print("\(args[1]) now plays its Windows version through Tessera; open Steam and press Update (or Play) on the game to download it")
+            case "--launch-entries":
+                // Steam's own launch entries of the given apps (appcache/appinfo.vdf): why a game is, or is not,
+                // listed under "Mac versions that can't run"
+                var file = AppInfo.file
+                var ids: [String] = []
+                var i = 1
+                while i < args.count {
+                    if args[i] == "--file", i + 1 < args.count { file = URL(fileURLWithPath: args[i + 1]); i += 2 }
+                    else { ids.append(args[i]); i += 1 }
+                }
+                let found = AppInfo.launchEntries(of: Set(ids), in: file)
+                for id in ids {
+                    guard let entries = found[id] else { print("\(id): not in \(file.lastPathComponent)"); continue }
+                    print("\(id): \(entries.count) launch entries, \(entries.contains(where: \.startsOnMac) ? "one starts on a Mac" : "none starts on a Mac")")
+                    for e in entries { print("  \(e.executable)\t\(e.oslist.isEmpty ? "(every system)" : e.oslist)") }
+                }
             case "--runtimes":
                 for package in microsoftPackages {
                     print("\(microsoftPackageIsDownloaded(package) ? "downloaded" : "missing   ")  \(package.file)")
@@ -71,7 +88,7 @@ enum CLI {
                 try SteamSetup.restoreOriginals()
                 print("Steam.app has Valve's own files again")
             default:
-                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --restore-steam | --play-windows-version APPID | --runtimes | --download-runtimes | --check-update | --update [--reopen]")
+                print("usage: Tessera --status | --install [--all-games] [--keep-mappings] | --uninstall | --restore-steam | --play-windows-version APPID | --launch-entries APPID... | --runtimes | --download-runtimes | --check-update | --update [--reopen]")
             }
             exit(0)
         } catch {

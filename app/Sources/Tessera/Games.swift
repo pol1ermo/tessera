@@ -7,6 +7,8 @@ struct Game: Identifiable, Hashable {
     let installDir: URL
     let sizeOnDisk: Int64
     let lastPlayed: Date?
+    /// Set for the games of GameLibrary.macVersionsThatCannotRun(): why the installed Mac version cannot run.
+    var macProblem: MacVersionProblem? = nil
 
     var settingsFile: URL { Paths.settingsFile(appID: id) }
     var logFile: URL { Paths.gameLog(appID: id) }
@@ -21,6 +23,19 @@ struct Game: Identifiable, Hashable {
         if fm.fileExists(atPath: pfx.appendingPathComponent(".tessera").path) { return pfx }
         let own = compat.appendingPathComponent("tessera")
         return fm.fileExists(atPath: own.appendingPathComponent("system.reg").path) ? own : nil
+    }
+}
+
+/// Why an installed Mac version of a game cannot run.
+enum MacVersionProblem: Hashable {
+    case only32Bit              // its programs are 32-bit; macOS 10.15 and later run only 64-bit ones
+    case noMacStartEntry        // Steam has Mac files for the game but no entry to start them with
+
+    var short: String {
+        switch self {
+        case .only32Bit: return "32-bit"
+        case .noMacStartEntry: return "Steam has no way to start it"
+        }
     }
 }
 
@@ -77,10 +92,16 @@ enum GameLibrary {
         return games.sorted { ($0.lastPlayed ?? .distantPast) > ($1.lastPlayed ?? .distantPast) }
     }
 
-    /// Installed games that Steam gave their Mac version where that version cannot run: a 32-bit program (macOS 10.15
-    /// and later run only 64-bit ones). Tessera can play their Windows version instead.
+    /// Installed games that Steam gave their Mac version where that version cannot run. Tessera can play their
+    /// Windows version instead. Two cases:
+    /// - a 32-bit program (macOS 10.15 and later run only 64-bit ones);
+    /// - Mac files that Steam cannot start. Some games have a Mac depot on Steam (an unfinished or dropped Mac
+    ///   version) while every launch entry of the game is for Windows. Steam on a Mac picks depots by system, so it
+    ///   installs the Mac files, and then fails to start the game ("entry for launch option 0 not found"; Backrooms:
+    ///   Escape Together). Steam for Linux has the same case, where the cure is also to choose the Windows version.
     static func macVersionsThatCannotRun() -> [Game] {
         var games: [Game] = []
+        var runnable: [Game] = []           // Mac versions whose programs run: does Steam have an entry to start them?
         let fm = FileManager.default
         let setToTessera = gamesSetToTessera()
         for lib in libraries() {
@@ -94,11 +115,24 @@ enum GameLibrary {
                 // a Mac version can carry Windows files from depots both versions share (Portal 2: portal2.exe), so
                 // the Mac programs decide
                 let programs = macPrograms(in: install)
-                guard !programs.isEmpty, !programs.contains(where: macProgramRuns) else { continue }
+                guard !programs.isEmpty else { continue }
                 let played = Double(kv["LastPlayed"] ?? "").flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
-                games.append(Game(id: id, name: name, installDir: install,
-                                  sizeOnDisk: Int64(kv["SizeOnDisk"] ?? "") ?? 0, lastPlayed: played))
+                var game = Game(id: id, name: name, installDir: install,
+                                sizeOnDisk: Int64(kv["SizeOnDisk"] ?? "") ?? 0, lastPlayed: played)
+                if programs.contains(where: macProgramRuns) {
+                    runnable.append(game)
+                } else {
+                    game.macProblem = .only32Bit
+                    games.append(game)
+                }
             }
+        }
+        // Steam's own list of the game's launch entries decides; a game Steam's file does not hold is left alone
+        let entries = AppInfo.launchEntries(of: Set(runnable.map(\.id)))
+        for var game in runnable {
+            guard let list = entries[game.id], !list.isEmpty, !list.contains(where: \.startsOnMac) else { continue }
+            game.macProblem = .noMacStartEntry
+            games.append(game)
         }
         return games.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
